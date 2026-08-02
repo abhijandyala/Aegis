@@ -1,0 +1,47 @@
+{
+  "id": "s02_mmsi_spoof",
+  "name": "Simultaneous MMSI spoof (the encore)",
+  "description": "Two synthetic vessels, ~40 km apart, both broadcast the same MMSI from t=0 -- physically impossible for one vessel, so one broadcast is spoofed. Runs on the identical scenario engine as s01 with zero code changes; the only difference is data. If Raj's JTMS (justification-based truth maintenance) is wired in, retracting the false 'one vessel' belief should cascade into two independently tracked identities instead.",
+  "seed": 20260726,
+  "origin": {"lat": 36.75, "lon": -121.95},
+  "bbox": {"lon_min": -123.2, "lat_min": 35.4, "lon_max": -121.0, "lat_max": 38.0},
+  "time_window": {"start": "2024-06-15T06:00:00+00:00", "end": "2024-06-15T07:00:00+00:00"},
+  "frame_interval_s": 30.0,
+  "ais_required": false,
+  "synthetic_actors": [
+    {
+      "actor_id": "vessel_a",
+      "track": "gen:transit",
+      "params": {
+        "start_latlon": [36.6, -121.9],
+        "heading_deg": 45.0,
+        "speed_mps": 5.0,
+        "t_start": 0.0,
+        "t_end": 3600.0
+      }
+    },
+    {
+      "actor_id": "vessel_b",
+      "track": "gen:transit",
+      "params": {
+        "start_latlon": [36.95, -122.0],
+        "heading_deg": 200.0,
+        "speed_mps": 5.0,
+        "t_start": 0.0,
+        "t_end": 3600.0
+      }
+    }
+  ],
+  "events": [
+    {"id": "ev_spoof_a", "t": 0.0, "kind": "identity_change", "actor": "vessel_a", "params": {"new_display_id": "mmsi:412345678"}},
+    {"id": "ev_spoof_b", "t": 0.0, "kind": "identity_change", "actor": "vessel_b", "params": {"new_display_id": "mmsi:412345678"}}
+  ],
+  "expected": {
+    "spoof_detected": true,
+    "spoof_mmsi": "mmsi:412345678",
+    "actors": ["vessel_a", "vessel_b"],
+    "min_separation_km": 39.9,
+    "retraction_cascade": "expected only if JTMS is implemented (Raj); if not, spoof_detected alone is the pack's minimum bar",
+    "notes": "Both actors broadcast display_id mmsi:412345678 from t=0. Ground truth keeps them as distinct actor keys (vessel_a, vessel_b) throughout -- the spoof is a display-identity collision, not a measurement-identity collision, consistent with the no-identity-on-measurement contract."
+  }
+}

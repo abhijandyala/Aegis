@@ -1,0 +1,23 @@
+{
+  "source": {
+    "agency": "U.S. Coast Guard National Pollution Funds Center",
+    "workbook": "Electronic CG-5136 Cost Documentation Workbook (5136X-Large_CG.xlsx)",
+    "rate_schedule": "FY26 Reimbursable Standard Rates",
+    "effective_date": "2025-10-01",
+    "url": "https://www.uscg.mil/Mariners/National-Pollution-Funds-Center/Documentation-Cost/",
+    "scope_note": "Outside-government reimbursable rates. The workbook directs inside-government users to contact NPFC for applicable formulas."
+  },
+  "personnel_hourly_usd": {
+    "E-5": 96,
+    "E-6": 110,
+    "O-3": 149
+  },
+  "boats_hourly_usd": {
+    "Response Boat - Small (II)": 4690,
+    "Response Boat - Medium": 9321
+  },
+  "aircraft_hourly_usd": {
+    "MH-65 Dolphin": 19346,
+    "MH-60 Jayhawk": 30026
+  }
+}

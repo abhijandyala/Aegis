@@ -1,0 +1,55 @@
+{
+  "id": "s02_synthetic_demo",
+  "name": "Synthetic-only demo (data-acquisition fallback)",
+  "description": "No real AIS. Four synthetic actors: two crossing transits, one ferry-like run, and a ghost that goes dark inside the sanctuary. Exists to prove pack swapping needs zero code changes and as the honest fallback if AIS acquisition fails.",
+  "seed": 42,
+  "origin": {"lat": 37.825, "lon": -122.4},
+  "bbox": {"lon_min": -122.55, "lat_min": 37.7, "lon_max": -122.2, "lat_max": 37.95},
+  "time_window": {"start": "2024-06-15T18:00:00+00:00", "end": "2024-06-15T19:00:00+00:00"},
+  "frame_interval_s": 30.0,
+  "ais_required": false,
+  "geofence_layers": [
+    {"file": "layers/central_bay_sanctuary.geojson", "kind": "sanctuary"}
+  ],
+  "synthetic_actors": [
+    {
+      "actor_id": "ghost_1",
+      "track": "gen:transit_then_loiter",
+      "params": {
+        "start": [-5500.0, -1800.0],
+        "heading_deg": 62.0,
+        "speed_mps": 5.0,
+        "transit_s": 900.0,
+        "loiter_radius_m": 180.0
+      }
+    },
+    {
+      "actor_id": "eastbound_1",
+      "track": "gen:transit",
+      "params": {"start": [-4000.0, 500.0], "heading_deg": 90.0, "speed_mps": 6.0}
+    },
+    {
+      "actor_id": "westbound_1",
+      "track": "gen:transit",
+      "params": {"start": [4000.0, 480.0], "heading_deg": 270.0, "speed_mps": 6.0}
+    },
+    {
+      "actor_id": "ferry_1",
+      "track": "gen:transit",
+      "params": {"start": [1500.0, -2500.0], "heading_deg": 335.0, "speed_mps": 8.0, "t_end": 1800.0}
+    }
+  ],
+  "events": [
+    {"id": "ev_dark", "t": 180.0, "kind": "ais_off", "actor": "ghost_1"},
+    {"id": "ev_r1", "t": 420.0, "kind": "radar_contact", "actor": "ghost_1", "params": {"sigma": 50.0}},
+    {"id": "ev_r2", "t": 720.0, "kind": "radar_contact", "actor": "ghost_1", "params": {"sigma": 50.0}},
+    {"id": "ev_r3", "t": 1020.0, "kind": "radar_contact", "actor": "ghost_1", "params": {"sigma": 50.0}},
+    {"id": "ev_r4", "t": 1500.0, "kind": "radar_contact", "actor": "ghost_1", "params": {"sigma": 50.0}},
+    {"id": "ev_r5", "t": 2100.0, "kind": "radar_contact", "actor": "ghost_1", "params": {"sigma": 50.0}}
+  ],
+  "expected": {
+    "min_vessels": 4,
+    "min_crossings": 1,
+    "dark_actor": "ghost_1"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "id": "s01_dark_in_sanctuary",
+  "name": "Dark vessel loitering in the Monterey Bay National Marine Sanctuary",
+  "description": "Single synthetic target transits into the Monterey Bay NMS from open water, loiters near its entry point (tight circle, radius 1000 m), then kills AIS 30 minutes after crossing the boundary. It keeps loitering unseen. A radar contact 40 minutes later lands on the loiter circle -- up to ~2 km from where a naive constant-velocity prediction (extrapolating the last known transit heading/speed) would place it. This is the headline demo: enter -> geofence alert -> dark -> uncertainty ellipse grows -> radar contact -> re-attribution to the same track.",
+  "seed": 20260726,
+  "origin": {"lat": 36.75, "lon": -121.95},
+  "bbox": {"lon_min": -123.2, "lat_min": 35.4, "lon_max": -121.0, "lat_max": 38.0},
+  "time_window": {"start": "2024-06-15T17:55:00+00:00", "end": "2024-06-15T19:55:00+00:00"},
+  "ais_csv": "ais_window.csv",
+  "frame_interval_s": 30.0,
+  "ais_required": false,
+  "geofence_layers": [
+    {"file": "layers/monterey_bay_nms.geojson", "kind": "sanctuary"}
+  ],
+  "synthetic_actors": [
+    {
+      "actor_id": "target_1",
+      "track": "gen:transit_then_loiter",
+      "params": {
+        "start_latlon": [36.75, -122.90],
+        "heading_deg": 90.0,
+        "speed_mps": 6.0,
+        "transit_s": 1500.0,
+        "loiter_radius_m": 1000.0,
+        "loiter_speed_mps": 0.83,
+        "t_start": 0.0,
+        "t_end": 7200.0
+      }
+    }
+  ],
+  "events": [
+    {"id": "ev_dark", "t": 3135.0, "kind": "ais_off", "actor": "target_1"},
+    {"id": "ev_radar", "t": 5535.0, "kind": "radar_contact", "actor": "target_1", "params": {"sigma": 50.0}}
+  ],
+  "expected": {
+    "id_switches_max": 0,
+    "reassoc_p_min": 0.85,
+    "geofence_alert": true,
+    "dark_actor": "target_1",
+    "sanctuary_entry_s": 1350.0,
+    "dark_at_s": 3135.0,
+    "radar_contact_at_s": 5535.0,
+    "intrusion_fence": "monterey_bay_nms",
+    "predicted_vs_true_offset_verified_m": 1794,
+    "notes": "sanctuary_entry_s verified against the actual boundary crossing on this track (frame-grid snapped to 1350s, computed continuous crossing 1335s); dark_at_s = entry + 1800s; radar_contact_at_s = dark_at_s + 2400s, per brief. loiter_speed_mps=0.83 was tuned (verify_s01.py) so a naive last-known-velocity extrapolation from the moment AIS goes dark misses the true radar-contact position by 1794 m, i.e. ~2 km as specified."
+  }
+}

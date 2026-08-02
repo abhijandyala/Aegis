@@ -1,0 +1,26 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "central_bay_sanctuary",
+        "name": "Alcatraz Marine Sanctuary (demo layer)",
+        "kind": "sanctuary",
+        "note": "Deliberately tight around Alcatraz waters so routine ferry traffic does not intrude; the scripted ghost loiters inside it."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.432, 37.82],
+            [-122.412, 37.82],
+            [-122.412, 37.834],
+            [-122.432, 37.834],
+            [-122.432, 37.82]
+          ]
+        ]
+      }
+    }
+  ]
+}

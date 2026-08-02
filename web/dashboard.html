@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aegis · Maritime Safety & Financial Risk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="dashboard.css" />
+<link rel="stylesheet" href="onboarding.css" />
+</head>
+<body class="intro-active">
+<section id="aegis-intro" class="aegis-intro" aria-label="Welcome to Aegis">
+  <div class="intro-door intro-door-left" aria-hidden="true"></div>
+  <div class="intro-door intro-door-right" aria-hidden="true"></div>
+  <div class="intro-seam" aria-hidden="true"></div>
+
+  <div class="intro-copy">
+    <p class="intro-kicker">Save the seas with</p>
+    <h1 class="intro-title">Aegis</h1>
+  </div>
+
+  <div id="intro-earth" class="intro-earth" aria-hidden="true">
+    <div class="intro-earth-fallback"></div>
+    <canvas id="intro-earth-canvas"></canvas>
+  </div>
+
+  <button id="intro-skip" class="intro-skip" type="button" aria-label="Skip introduction">
+    Skip intro
+  </button>
+</section>
+
+<div id="app">
+
+  <div id="banner" class="hidden"></div>
+
+  <div class="main-row">
+
+    <aside id="eventlog">
+      <div class="rail-header">
+        <div>
+          <div class="brand">AEGIS</div>
+          <h1 class="rail-title">Maritime risk operations</h1>
+        </div>
+        <span id="assoc-badge" class="assoc-badge">GLOBAL</span>
+      </div>
+      <div id="log-entries" aria-live="polite"></div>
+    </aside>
+
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div id="global-badge" class="global-badge hidden">
+        Vessel feed &middot; connecting
+      </div>
+      <section id="trajectory-panel" class="trajectory-panel hidden" aria-live="polite">
+        <button id="trajectory-close" class="trajectory-close" aria-label="Close trajectory details">Close</button>
+        <div id="trajectory-name" class="trajectory-name">Contact</div>
+        <div id="trajectory-meta" class="trajectory-meta"></div>
+        <div id="trajectory-context" class="trajectory-context"></div>
+        <div id="trajectory-gfw" class="trajectory-context"></div>
+        <div id="trajectory-risk" class="trajectory-context"></div>
+        <div id="trajectory-environment" class="trajectory-environment"></div>
+        <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
+          <button class="trajectory-mode active" data-trajectory-mode="all">All likely routes</button>
+          <button class="trajectory-mode" data-trajectory-mode="single">Top route</button>
+        </div>
+        <div id="trajectory-heading" class="trajectory-heading">Predicted route likelihood</div>
+        <div id="trajectory-options"></div>
+        <p id="trajectory-note" class="trajectory-note">
+          Route estimates appear only after a vessel stops reporting its position.
+        </p>
+      </section>
+      <div id="stats-overlay">
+        <div class="stat"><span id="id-switch-count">0</span><label>identity changes</label></div>
+        <div class="stat"><span id="stats-tracks">0</span><label>transmitting</label></div>
+        <div class="stat"><span id="stats-dark">0</span><label id="stats-dark-label">no AIS report &gt;45s</label></div>
+        <div class="stat"><span id="stats-total">0</span><label>total vessels</label></div>
+      </div>
+    </div>
+
+    <aside id="sidepanel">
+      <div class="tabbar">
+        <button class="tab-btn active" data-tab="risk">Risk</button>
+        <button class="tab-btn" data-tab="brief">Brief</button>
+        <button class="tab-btn" data-tab="jtms">Evidence</button>
+        <button class="tab-btn" data-tab="eval">Checks</button>
+      </div>
+
+      <div id="tab-risk" class="tab-pane active">
+        <p class="hint">Conditional response options calculated from official Coast Guard resource rates. Options are not incurred costs and are not added together.</p>
+        <div id="risk-summary"></div>
+        <div id="risk-list"></div>
+      </div>
+
+      <div id="tab-brief" class="tab-pane">
+        <p class="hint">Plain-language summary of the selected vessel and active safety signals.</p>
+        <div id="brief-list"></div>
+      </div>
+
+      <div id="tab-jtms" class="tab-pane">
+        <p class="hint">Observed signals supporting the current vessel assessment.</p>
+        <div id="jtms-facts"></div>
+        <div id="jtms-concls"></div>
+      </div>
+
+      <div id="tab-eval" class="tab-pane">
+        <p class="hint">Checks calculated from the active live feed or the selected replay—not placeholder results.</p>
+        <div id="eval-summary"></div>
+        <div id="eval-list"></div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div id="transport">
+    <button id="btn-reset" class="tbtn" title="Return to the start of the scenario [Esc]">Reset</button>
+    <button id="btn-play" class="tbtn tbtn-primary" title="Play / Pause [Space]">Play</button>
+
+    <div class="speed-group" role="group" aria-label="Playback speed">
+      <button class="tbtn speed-btn" data-speed="1">1&times;</button>
+      <button class="tbtn speed-btn" data-speed="10">10&times;</button>
+      <button class="tbtn speed-btn" data-speed="60">60&times;</button>
+    </div>
+
+    <input id="scrubber" type="range" min="0" max="0" value="0" step="1" />
+    <div id="frame-readout">Step 0 of 0 &middot; 00:00:00</div>
+
+    <select id="pack-picker" title="Scenario pack"></select>
+
+    <button id="btn-assoc" class="tbtn" title="Compare standard and simplified tracking [M]">STANDARD</button>
+    <button id="btn-retract" class="tbtn" title="Temporarily remove the secondary identity report [X]">Remove identity report</button>
+    <button id="btn-global-layer" class="tbtn control-with-glyph" title="Toggle live vessel positions">
+      <span class="control-glyph control-glyph-live" aria-hidden="true"></span>
+      <span>Live AIS</span>
+    </button>
+    <button id="btn-bathymetry" class="tbtn control-with-glyph active" title="Toggle colored GEBCO ocean map" aria-pressed="true">
+      <span class="control-glyph control-glyph-depth" aria-hidden="true"></span>
+      <span>Colored Map</span>
+    </button>
+
+    <div id="conn-status" class="conn-status">connecting&hellip;</div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="onboarding.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

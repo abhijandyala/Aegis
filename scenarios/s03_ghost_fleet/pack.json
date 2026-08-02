@@ -1,0 +1,36 @@
+{
+  "id": "s03_ghost_fleet",
+  "name": "Ghost fleet re-flagging (roadmap)",
+  "description": "One continuous synthetic track changes its broadcast MMSI and display name mid-replay -- a re-flagging/re-registration maneuver real ghost fleets use. Kinematic continuity (no gap, no maneuver) should re-link the pre- and post-change identity to the same track. The new name matches a real OFAC SDN-listed vessel (see geo/ofac_sdn_vessels_subset.csv), which should raise alert severity on the re-link.",
+  "seed": 20260726,
+  "origin": {"lat": 36.75, "lon": -121.95},
+  "bbox": {"lon_min": -123.2, "lat_min": 35.4, "lon_max": -121.0, "lat_max": 38.0},
+  "time_window": {"start": "2024-06-15T06:00:00+00:00", "end": "2024-06-15T07:00:00+00:00"},
+  "frame_interval_s": 30.0,
+  "ais_required": false,
+  "synthetic_actors": [
+    {
+      "actor_id": "actor_1",
+      "track": "gen:transit",
+      "params": {
+        "start_latlon": [36.5, -122.2],
+        "heading_deg": 30.0,
+        "speed_mps": 7.0,
+        "t_start": 0.0,
+        "t_end": 3600.0
+      }
+    }
+  ],
+  "events": [
+    {"id": "ev_initial_id", "t": 0.0, "kind": "identity_change", "actor": "actor_1", "params": {"new_display_id": "mmsi:367111222"}},
+    {"id": "ev_reflag", "t": 1800.0, "kind": "identity_change", "actor": "actor_1", "params": {"new_display_id": "mmsi:572469210"}}
+  ],
+  "expected": {
+    "relink_same_track": true,
+    "ofac_hit": true,
+    "ofac_hit_name": "ARTAVIL",
+    "ofac_hit_mmsi": "mmsi:572469210",
+    "severity_escalates_on_relink": true,
+    "notes": "actor_1 keeps one continuous kinematic track throughout; only its display_id changes at t=1800s (mmsi:367111222 -> mmsi:572469210). mmsi:572469210 / 'ARTAVIL' is a real OFAC SDN vessel entry (Iran program, crude/oil tanker, f.k.a. 'ALPHA') pulled into geo/ofac_sdn_vessels_subset.csv -- the OFAC-hit check is a real lookup against that subset, not a synthetic label. One attempt per the time box; cut freely if it doesn't land."
+  }
+}

@@ -1,0 +1,10 @@
+# Aegis runs on ordinary Python; Python 3.12 is the tested version.
+numpy==2.5.1
+scipy==1.18.0
+pytest==9.1.1
+shapely==2.1.2
+aiohttp>=3.10
+copernicusmarine==2.4.1
+
+# Optional live LLM polishing. Aegis defaults to deterministic offline text.
+litellm>=1.40
