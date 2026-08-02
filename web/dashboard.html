@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="dashboard.css" />
-<link rel="stylesheet" href="onboarding.css" />
+<link rel="stylesheet" href="onboarding.css?v=20260802-intro3" />
 </head>
 <body class="intro-active">
 <section id="aegis-intro" class="aegis-intro" aria-label="Welcome to Aegis">
@@ -20,6 +20,15 @@
   <div class="intro-copy">
     <p class="intro-kicker">Save the seas with</p>
     <h1 class="intro-title">Aegis</h1>
+    <p class="intro-subtitle">Maritime awareness for the moments AIS goes quiet.</p>
+    <div class="intro-actions">
+      <button id="intro-start" class="intro-button intro-button-primary" type="button">
+        Start
+      </button>
+      <button id="intro-more" class="intro-button intro-button-secondary" type="button" aria-expanded="false" aria-controls="intro-info">
+        More info
+      </button>
+    </div>
   </div>
 
   <div id="intro-earth" class="intro-earth" aria-hidden="true">
@@ -27,9 +36,37 @@
     <canvas id="intro-earth-canvas"></canvas>
   </div>
 
-  <button id="intro-skip" class="intro-skip" type="button" aria-label="Skip introduction">
-    Skip intro
-  </button>
+  <div id="intro-info" class="intro-info" aria-hidden="true">
+    <button id="intro-info-close" class="intro-info-close" type="button" aria-label="Close information">Close</button>
+    <p class="intro-info-eyebrow">Why Aegis</p>
+    <h2>See what happens between the last signal and the next.</h2>
+    <p class="intro-info-lead">
+      Aegis combines live maritime reporting with satellite detections, environmental conditions, protected-area context, and transparent uncertainty.
+    </p>
+    <div class="intro-info-stats">
+      <div><strong>Live</strong><span>global AIS contact feed</span></div>
+      <div><strong>30 days</strong><span>fishing effort and SAR context</span></div>
+      <div><strong>Monte Carlo</strong><span>routes only after AIS silence</span></div>
+    </div>
+    <div class="intro-info-grid">
+      <article>
+        <span>01</span>
+        <h3>Detect the gap</h3>
+        <p>Preserve the vessel’s final report and show exactly how long its AIS signal has been absent.</p>
+      </article>
+      <article>
+        <span>02</span>
+        <h3>Estimate, don’t invent</h3>
+        <p>Model plausible movement using heading, speed, currents, wind, waves, coastline, and uncertainty.</p>
+      </article>
+      <article>
+        <span>03</span>
+        <h3>Add independent evidence</h3>
+        <p>Review Global Fishing Watch identity, activity, SAR, protected waters, ports, and sourced response costs.</p>
+      </article>
+    </div>
+    <p class="intro-info-note">Aegis supports investigation. It does not declare activity illegal or replace navigation and enforcement authorities.</p>
+  </div>
 </section>
 
 <div id="app">
@@ -54,12 +91,33 @@
       <div id="global-badge" class="global-badge hidden">
         Vessel feed &middot; connecting
       </div>
+      <section id="fishing-intelligence" class="fishing-intelligence" aria-label="Fishing intelligence layers">
+        <button id="fishing-intelligence-toggle" class="fishing-intelligence-toggle" type="button" aria-expanded="false">
+          <span class="intel-pulse" aria-hidden="true"></span>
+          <span>Fishing intelligence</span>
+          <span class="intel-chevron" aria-hidden="true"></span>
+        </button>
+        <div id="fishing-intelligence-body" class="fishing-intelligence-body hidden">
+          <button class="intel-layer" type="button" data-intel-layer="fishing" aria-pressed="false">
+            <span class="intel-swatch intel-swatch-fishing"></span>
+            <span><strong>Fishing effort</strong><small>Apparent fishing hours · recent 30 days</small></span>
+          </button>
+          <button class="intel-layer" type="button" data-intel-layer="sar" aria-pressed="false">
+            <span class="intel-swatch intel-swatch-sar"></span>
+            <span><strong>SAR detections</strong><small>Satellite vessel detections · recent 30 days</small></span>
+          </button>
+          <p id="fishing-intelligence-note" class="fishing-intelligence-note">
+            Global Fishing Watch analysis. Activity does not by itself establish illegality.
+          </p>
+        </div>
+      </section>
       <section id="trajectory-panel" class="trajectory-panel hidden" aria-live="polite">
         <button id="trajectory-close" class="trajectory-close" aria-label="Close trajectory details">Close</button>
         <div id="trajectory-name" class="trajectory-name">Contact</div>
         <div id="trajectory-meta" class="trajectory-meta"></div>
         <div id="trajectory-context" class="trajectory-context"></div>
         <div id="trajectory-gfw" class="trajectory-context"></div>
+        <div id="trajectory-activity" class="trajectory-activity"></div>
         <div id="trajectory-risk" class="trajectory-context"></div>
         <div id="trajectory-environment" class="trajectory-environment"></div>
         <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
@@ -146,7 +204,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="onboarding.js"></script>
+<script src="onboarding.js?v=20260802-intro2"></script>
 <script src="dashboard.js"></script>
 </body>
 </html>

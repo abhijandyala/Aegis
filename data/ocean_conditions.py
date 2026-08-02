@@ -14,6 +14,14 @@ CURRENT_DATASET = "cmems_mod_glo_phy_anfc_merged-uv_PT1H-i"
 WAVE_DATASET = "cmems_mod_glo_wav_anfc_0.083deg_PT3H-i"
 
 
+def _rounded_or_none(value: object, digits: int) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, digits) if math.isfinite(number) else None
+
+
 class OceanConditionsClient:
     """Fetch a compact surface-current grid only when an operator selects a vessel."""
 
@@ -142,12 +150,12 @@ class OceanConditionsClient:
                     "speed_mps": round(math.hypot(east, north), 4),
                     "bearing_deg": round(math.degrees(math.atan2(east, north)) % 360, 1),
                     "components": {
-                        "ocean_east_mps": round(float(row.uo), 4),
-                        "ocean_north_mps": round(float(row.vo), 4),
-                        "tide_east_mps": round(float(row.utide), 4),
-                        "tide_north_mps": round(float(row.vtide), 4),
-                        "stokes_east_mps": round(float(row.vsdx), 4),
-                        "stokes_north_mps": round(float(row.vsdy), 4),
+                        "ocean_east_mps": _rounded_or_none(row.uo, 4),
+                        "ocean_north_mps": _rounded_or_none(row.vo, 4),
+                        "tide_east_mps": _rounded_or_none(row.utide, 4),
+                        "tide_north_mps": _rounded_or_none(row.vtide, 4),
+                        "stokes_east_mps": _rounded_or_none(row.vsdx, 4),
+                        "stokes_north_mps": _rounded_or_none(row.vsdy, 4),
                     },
                 })
             center = min(
@@ -156,6 +164,12 @@ class OceanConditionsClient:
                     (vector["lat"] - lat) ** 2
                     + (vector["lon"] - lon) ** 2
                 ),
+            )
+            vectors.sort(
+                key=lambda vector: (
+                    (vector["lat"] - lat) ** 2
+                    + (vector["lon"] - lon) ** 2
+                )
             )
             wave = {
                 "available": False,
@@ -181,10 +195,10 @@ class OceanConditionsClient:
                         "dataset": WAVE_DATASET,
                         "valid_at": wave_row["time"].isoformat(),
                         "height_m": round(float(wave_row.VHM0), 3),
-                        "period_s": round(float(wave_row.VTPK), 3),
+                        "period_s": _rounded_or_none(wave_row.VTPK, 3),
                         "from_direction_deg": round(float(wave_row.VMDR), 1),
-                        "stokes_east_mps": round(float(wave_row.VSDX), 4),
-                        "stokes_north_mps": round(float(wave_row.VSDY), 4),
+                        "stokes_east_mps": _rounded_or_none(wave_row.VSDX, 4),
+                        "stokes_north_mps": _rounded_or_none(wave_row.VSDY, 4),
                     }
             except Exception as exc:
                 wave["error"] = type(exc).__name__

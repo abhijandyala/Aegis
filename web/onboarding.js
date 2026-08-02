@@ -6,10 +6,14 @@
   const intro = document.getElementById("aegis-intro");
   const earthHost = document.getElementById("intro-earth");
   const canvas = document.getElementById("intro-earth-canvas");
-  const skip = document.getElementById("intro-skip");
-  if (!intro || !earthHost || !canvas || !skip) return;
+  const start = document.getElementById("intro-start");
+  const more = document.getElementById("intro-more");
+  const info = document.getElementById("intro-info");
+  const infoClose = document.getElementById("intro-info-close");
+  if (!intro || !earthHost || !canvas || !start || !more || !info || !infoClose) return;
 
   let finished = false;
+  let launching = false;
   let stopGlobe = () => {};
 
   function finishIntro() {
@@ -22,19 +26,34 @@
     window.dispatchEvent(new CustomEvent("aegis:intro-complete"));
   }
 
-  function skipIntro() {
-    if (finished || intro.classList.contains("is-skipped")) return;
-    intro.classList.remove("is-playing");
-    intro.classList.add("is-skipped");
-    window.setTimeout(finishIntro, 820);
+  function setInfoOpen(open) {
+    if (launching || finished) return;
+    intro.classList.toggle("info-open", open);
+    info.setAttribute("aria-hidden", String(!open));
+    more.setAttribute("aria-expanded", String(open));
+    if (open) infoClose.focus();
+    else more.focus();
   }
 
-  skip.addEventListener("click", skipIntro);
+  function startIntro() {
+    if (finished || launching) return;
+    launching = true;
+    intro.classList.remove("info-open");
+    info.setAttribute("aria-hidden", "true");
+    more.setAttribute("aria-expanded", "false");
+    intro.classList.add("is-launching");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.setTimeout(finishIntro, reducedMotion ? 1150 : 3900);
+  }
+
+  start.addEventListener("click", startIntro);
+  more.addEventListener("click", () => setInfoOpen(true));
+  infoClose.addEventListener("click", () => setInfoOpen(false));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !finished) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      skipIntro();
+      if (intro.classList.contains("info-open")) setInfoOpen(false);
     }
   }, true);
 
@@ -42,10 +61,7 @@
     if (event.animationName === "intro-door-right") finishIntro();
   });
 
-  requestAnimationFrame(() => intro.classList.add("is-playing"));
-
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  window.setTimeout(finishIntro, reducedMotion ? 2800 : 7200);
+  requestAnimationFrame(() => intro.classList.add("is-ready"));
 
   setupGlobe(canvas, earthHost)
     .then((cleanup) => {

@@ -225,7 +225,20 @@ def build_app(cache: dict) -> web.Application:
         if api_key else None
     )
     gfw_token = os.environ.get("GFW_API_TOKEN", "")
-    app["gfw_client"] = GlobalFishingWatchClient(gfw_token) if gfw_token else None
+    wdpa_path = os.environ.get("AEGIS_WDPA_CSV", "")
+    if not wdpa_path:
+        supplied_wdpa = (
+            Path.home()
+            / "Downloads"
+            / "WDPA_WDOECM_Aug2026_Public_marine_csv"
+            / "WDPA_WDOECM_Aug2026_Public_marine_csv.csv"
+        )
+        if supplied_wdpa.is_file():
+            wdpa_path = str(supplied_wdpa)
+    app["gfw_client"] = (
+        GlobalFishingWatchClient(gfw_token, protected_areas_path=wdpa_path)
+        if gfw_token else None
+    )
     app["ocean_client"] = OceanConditionsClient()
     app["weather_client"] = WeatherConditionsClient()
     app["ocean_tasks"] = set()
@@ -521,11 +534,59 @@ def build_app(cache: dict) -> web.Application:
             **await client.vessel_identity(mmsi),
         })
 
+    async def api_gfw_activity(request: web.Request) -> web.Response:
+        mmsi = int(request.match_info["mmsi"])
+        client = app["gfw_client"]
+        if client is None:
+            return web.json_response({
+                "configured": False,
+                "matched": False,
+                "mmsi": mmsi,
+                "events": [],
+                "source": "Global Fishing Watch",
+            })
+        return web.json_response({
+            "configured": True,
+            **await client.vessel_activity(mmsi),
+        })
+
+    async def api_gfw_layers(request: web.Request) -> web.Response:
+        client = app["gfw_client"]
+        if client is None:
+            return web.json_response({"configured": False, "layers": []})
+        return web.json_response(await client.map_layers())
+
+    async def api_gfw_tile(request: web.Request) -> web.Response:
+        client = app["gfw_client"]
+        if client is None:
+            raise web.HTTPServiceUnavailable()
+        status, body, content_type = await client.map_tile(
+            request.match_info["kind"],
+            int(request.match_info["z"]),
+            int(request.match_info["x"]),
+            int(request.match_info["y"]),
+        )
+        return web.Response(
+            status=status,
+            body=body,
+            content_type=content_type.split(";", 1)[0],
+            headers={"Cache-Control": "public, max-age=21600"},
+        )
+
     app.router.add_get("/api/global", api_global)
     app.router.add_post("/api/global/pin", api_global_pin)
     app.router.add_get(r"/api/global/{mmsi:\d{9}}/prediction", api_dark_prediction)
     app.router.add_get("/api/context/layers", api_context_layers)
     app.router.add_get(r"/api/global/{mmsi:\d{9}}/gfw", api_gfw_identity)
+    app.router.add_get(
+        r"/api/global/{mmsi:\d{9}}/gfw/activity",
+        api_gfw_activity,
+    )
+    app.router.add_get("/api/gfw/layers", api_gfw_layers)
+    app.router.add_get(
+        r"/api/gfw/tiles/{kind:fishing|sar}/{z:\d+}/{x:\d+}/{y:\d+}.png",
+        api_gfw_tile,
+    )
     app.router.add_get("/api/scenario", api_scenario)
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/play", api_play)

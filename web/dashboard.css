@@ -447,6 +447,27 @@ textarea {
   pointer-events: none;
   will-change: transform, opacity;
 }
+.selected-vessel-icon {
+  display: grid !important;
+  place-items: center;
+  width: 18px !important;
+  height: 26px !important;
+  background: none !important;
+  border: 0 !important;
+  pointer-events: none;
+}
+.selected-vessel-icon svg {
+  display: block;
+  width: 18px;
+  height: 26px;
+  overflow: visible;
+  transform-origin: 50% 50%;
+  fill: rgba(111, 201, 232, 0.82);
+  stroke: #d9f5ff;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px rgba(111, 201, 232, 0.72));
+}
 .trajectory-runner-icon svg {
   display: block;
   width: 14px;
@@ -454,6 +475,12 @@ textarea {
   overflow: visible;
   transform-origin: 50% 50%;
   filter: drop-shadow(0 0 4px currentColor);
+}
+.trajectory-runner-icon.compact svg {
+  width: 10px;
+  height: 14px;
+  opacity: 0.82;
+  filter: drop-shadow(0 0 2px currentColor);
 }
 .trajectory-runner-icon path {
   fill: #ffffff;
@@ -1204,6 +1231,216 @@ body.live-mode .assoc-badge {
   filter: none;
 }
 
+.fishing-intelligence {
+  position: absolute;
+  z-index: 720;
+  top: 0.85rem;
+  left: 0.85rem;
+  width: 250px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(7, 10, 13, 0.84);
+  backdrop-filter: blur(12px);
+}
+
+.fishing-intelligence-toggle {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.intel-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffb454;
+  box-shadow: 0 0 0 4px rgba(255, 180, 84, 0.1);
+}
+
+.intel-chevron {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1px solid var(--text-dim);
+  border-bottom: 1px solid var(--text-dim);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 180ms ease;
+}
+
+.fishing-intelligence-toggle[aria-expanded="true"] .intel-chevron {
+  transform: rotate(225deg) translate(-2px, -2px);
+}
+
+.fishing-intelligence-body {
+  padding: 0.15rem 0.45rem 0.55rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.intel-layer {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.65rem 0.3rem;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+
+.intel-layer:hover,
+.intel-layer.active { color: var(--text); }
+.intel-layer:disabled { opacity: 0.38; cursor: default; }
+.intel-layer strong { display: block; font-size: 0.71rem; font-weight: 600; }
+.intel-layer small {
+  display: block;
+  margin-top: 0.16rem;
+  font-size: 0.57rem;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+.intel-swatch {
+  width: 9px;
+  height: 9px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.52;
+}
+.intel-layer.active .intel-swatch {
+  opacity: 1;
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 14%, transparent);
+}
+.intel-swatch-fishing { color: #ffb454; background: #ffb454; }
+.intel-swatch-sar { color: #db7cff; background: #db7cff; }
+
+.fishing-intelligence-note {
+  margin: 0.55rem 0.3rem 0.1rem;
+  color: var(--text-dim);
+  font-size: 0.56rem;
+  line-height: 1.4;
+}
+
+.trajectory-activity { margin-bottom: 0.7rem; }
+.activity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.45rem 0 0.5rem;
+}
+.activity-chip {
+  padding: 0.22rem 0.38rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.56rem;
+}
+.activity-chip b { color: var(--text); font-weight: 600; }
+.activity-list { border-top: 1px solid var(--border-soft); }
+.activity-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.48rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.activity-row:hover strong { color: var(--cyan); }
+.activity-row strong { display: block; font-size: 0.64rem; font-weight: 500; }
+.activity-row small {
+  display: block;
+  margin-top: 0.13rem;
+  color: var(--text-dim);
+  font-size: 0.55rem;
+  line-height: 1.35;
+}
+.activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7d95a5;
+}
+.activity-dot-fishing { background: #ffb454; }
+.activity-dot-encounter { background: #ef7f7f; }
+.activity-dot-loitering { background: #7fc9e8; }
+.activity-dot-port_visit { background: #78c7a4; }
+.activity-dot-gap { background: #db7cff; }
+.activity-caveat,
+.activity-empty {
+  margin: 0.5rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.57rem;
+  line-height: 1.4;
+}
+.activity-loading {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 0.59rem;
+}
+.activity-loading span {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--cyan);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: intel-spin 900ms linear infinite;
+}
+
+.gfw-event-marker-wrap { background: transparent; border: 0; }
+.gfw-event-marker {
+  position: relative;
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin: 3px;
+  border: 2px solid rgba(255, 255, 255, 0.88);
+  border-radius: 50%;
+  background: #7d95a5;
+  box-shadow: 0 0 0 3px rgba(7, 10, 13, 0.72);
+}
+.gfw-event-marker > span {
+  position: absolute;
+  inset: -5px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0;
+  animation: intel-ring 2.4s ease-out infinite;
+}
+.gfw-event-fishing { color: #ffb454; background: #ffb454; }
+.gfw-event-encounter { color: #ef7f7f; background: #ef7f7f; }
+.gfw-event-loitering { color: #7fc9e8; background: #7fc9e8; }
+.gfw-event-port-visit { color: #78c7a4; background: #78c7a4; }
+.gfw-event-gap { color: #db7cff; background: #db7cff; }
+
+@keyframes intel-spin { to { transform: rotate(360deg); } }
+@keyframes intel-ring {
+  0% { opacity: 0.62; transform: scale(0.7); }
+  70%, 100% { opacity: 0; transform: scale(1.55); }
+}
+
 @media (max-width: 1100px) {
   #eventlog {
     flex-basis: 220px;
@@ -1217,5 +1454,9 @@ body.live-mode .assoc-badge {
   #stats-overlay .stat {
     min-width: 4.25rem;
     padding-inline: 0.4rem;
+  }
+
+  .fishing-intelligence {
+    width: 220px;
   }
 }

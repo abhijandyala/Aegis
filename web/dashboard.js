@@ -35,6 +35,10 @@ const els = {
   btnGlobalLayer: document.getElementById("btn-global-layer"),
   btnBathymetry: document.getElementById("btn-bathymetry"),
   globalBadge: document.getElementById("global-badge"),
+  fishingIntelligence: document.getElementById("fishing-intelligence"),
+  fishingIntelligenceToggle: document.getElementById("fishing-intelligence-toggle"),
+  fishingIntelligenceBody: document.getElementById("fishing-intelligence-body"),
+  fishingIntelligenceNote: document.getElementById("fishing-intelligence-note"),
   banner: document.getElementById("banner"),
   briefList: document.getElementById("brief-list"),
   jtmsFacts: document.getElementById("jtms-facts"),
@@ -49,6 +53,7 @@ const els = {
   trajectoryMeta: document.getElementById("trajectory-meta"),
   trajectoryContext: document.getElementById("trajectory-context"),
   trajectoryGfw: document.getElementById("trajectory-gfw"),
+  trajectoryActivity: document.getElementById("trajectory-activity"),
   trajectoryRisk: document.getElementById("trajectory-risk"),
   trajectoryEnvironment: document.getElementById("trajectory-environment"),
   trajectoryOptions: document.getElementById("trajectory-options"),
@@ -81,6 +86,8 @@ const state = {
   predictionCache: new Map(),
   predictionPolls: new Set(),
   gfwCache: new Map(),
+  gfwActivityCache: new Map(),
+  gfwLayerMetadataLoaded: false,
   localView: null,
   preSelectionView: null,
   lastFrameRisk: null,
@@ -233,10 +240,70 @@ els.btnBathymetry.addEventListener("click", () => {
   else map.removeLayer(bathymetryLayer);
 });
 
+const fishingIntelligenceLayers = {
+  fishing: L.tileLayer("/api/gfw/tiles/fishing/{z}/{x}/{y}.png", {
+    opacity: 0.62,
+    maxZoom: 12,
+    keepBuffer: 2,
+    className: "gfw-heatmap-layer",
+    attribution: "Global Fishing Watch",
+  }),
+  sar: L.tileLayer("/api/gfw/tiles/sar/{z}/{x}/{y}.png", {
+    opacity: 0.72,
+    maxZoom: 12,
+    keepBuffer: 2,
+    className: "gfw-sar-layer",
+    attribution: "Global Fishing Watch · Copernicus Sentinel-1",
+  }),
+};
+
+async function loadFishingLayerMetadata() {
+  if (state.gfwLayerMetadataLoaded) return;
+  try {
+    const data = await getJson("/api/gfw/layers");
+    state.gfwLayerMetadataLoaded = true;
+    const available = new Map((data.layers || []).map((layer) => [layer.id, layer]));
+    for (const button of document.querySelectorAll(".intel-layer")) {
+      const layer = available.get(button.dataset.intelLayer);
+      button.disabled = !layer?.available;
+      const detail = button.querySelector("small");
+      if (layer?.available && detail) {
+        detail.textContent =
+          `${layer.unit} · ${layer.from} to ${layer.to}`;
+      }
+    }
+    els.fishingIntelligenceNote.textContent = data.note ||
+      "Activity does not by itself establish illegality.";
+  } catch (_err) {
+    els.fishingIntelligenceNote.textContent =
+      "Global Fishing Watch layers are temporarily unavailable.";
+  }
+}
+
+els.fishingIntelligenceToggle.addEventListener("click", () => {
+  const opening = els.fishingIntelligenceBody.classList.contains("hidden");
+  els.fishingIntelligenceBody.classList.toggle("hidden", !opening);
+  els.fishingIntelligenceToggle.setAttribute("aria-expanded", String(opening));
+  if (opening) loadFishingLayerMetadata();
+});
+for (const button of document.querySelectorAll(".intel-layer")) {
+  button.addEventListener("click", () => {
+    const kind = button.dataset.intelLayer;
+    const layer = fishingIntelligenceLayers[kind];
+    const enabling = !map.hasLayer(layer);
+    if (enabling) layer.addTo(map);
+    else map.removeLayer(layer);
+    button.classList.toggle("active", enabling);
+    button.setAttribute("aria-pressed", String(enabling));
+  });
+}
+
 const zonesLayer = L.featureGroup().addTo(map); // needs getBounds(); plain layerGroup lacks it
 const localLayer = L.layerGroup().addTo(map);
 const globalLayer = L.layerGroup();
 const globalProjectionLayer = L.layerGroup().addTo(globalLayer);
+const selectedVesselLayer = L.layerGroup().addTo(globalLayer);
+const fishingActivityLayer = L.layerGroup().addTo(globalLayer);
 map.createPane("vesselPane");
 map.getPane("vesselPane").style.zIndex = 390;
 map.getPane("vesselPane").style.opacity = "1";
@@ -944,15 +1011,36 @@ function globalMarkerStyle(v, stale = false) {
   const color = selected ? "#7dd3fc" : stale ? "#94a3b8" : critical ? "#ef4444" : "#ffb020";
   return {
     boatShape: true,
-    boatSelected: selected,
+    boatSelected: false,
     boatBearing: Number(v.course) || 0,
     color,
-    weight: selected ? 2.2 : v.dark ? 1.5 : 0.8,
-    opacity: stale ? 0.45 : 0.95,
+    weight: selected ? 0 : v.dark ? 1.5 : 0.8,
+    opacity: selected ? 0 : stale ? 0.45 : 0.95,
     fillColor: color,
-    fillOpacity: selected ? 0.82 : v.dark ? 0.08 : 0.78,
+    fillOpacity: selected ? 0 : v.dark ? 0.08 : 0.78,
     dashArray: selected ? null : v.dark ? "3 2" : null,
   };
+}
+
+function renderSelectedVesselOverlay(v) {
+  selectedVesselLayer.clearLayers();
+  if (!v) return;
+  const bearing = Number(v.course) || Number(v.heading) || 0;
+  L.marker([Number(v.lat), Number(v.lon)], {
+    icon: L.divIcon({
+      className: "selected-vessel-icon",
+      html:
+        `<svg viewBox="0 0 18 26" aria-hidden="true" ` +
+        `style="transform:rotate(${bearing}deg)">` +
+        `<path d="M9 1 L16 11 L14.5 23 L9 19 L3.5 23 L2 11 Z"></path>` +
+        `</svg>`,
+      iconSize: [18, 26],
+      iconAnchor: [9, 13],
+    }),
+    interactive: false,
+    keyboard: false,
+    zIndexOffset: 1200,
+  }).addTo(selectedVesselLayer);
 }
 
 function renderOceanCurrents(ocean) {
@@ -1069,7 +1157,10 @@ function renderEnvironmentalVisuals(prediction, start) {
   const wind = prediction.weather_conditions?.center;
   if (wind) {
     const bearing = Number(wind.bearing_deg);
-    const position = offsetPosition(start, bearing + 180, 850);
+    const startPoint = map.latLngToLayerPoint(start);
+    const position = map.layerPointToLatLng(
+      L.point(startPoint.x, startPoint.y - 48)
+    );
     L.marker(position, {
       icon: L.divIcon({
         className: "environment-map-icon wind-map-icon",
@@ -1129,16 +1220,27 @@ function stopTrajectoryAnimation({ resetClock = true } = {}) {
   if (resetClock) state.trajectoryAnimationStartedAt = null;
 }
 
-function trajectoryRunnerIcon(color) {
+function trajectoryRunnerIcon(color, compact = false) {
+  const width = compact ? 10 : 14;
+  const height = compact ? 14 : 20;
   return L.divIcon({
-    className: "trajectory-runner-icon",
+    className: `trajectory-runner-icon${compact ? " compact" : ""}`,
     html:
       `<svg viewBox="0 0 14 20" aria-hidden="true" style="color:${color}">` +
       `<path d="M7 1 L12 9 L11 17 L7 14.5 L3 17 L2 9 Z"></path>` +
       `</svg>`,
-    iconSize: [14, 20],
-    iconAnchor: [7, 10],
+    iconSize: [width, height],
+    iconAnchor: [width / 2, height / 2],
   });
+}
+
+function trajectoryBearing(from, to, fallback = 0) {
+  const north = Number(to[0]) - Number(from[0]);
+  const east =
+    (Number(to[1]) - Number(from[1])) *
+    Math.cos(Number(from[0]) * Math.PI / 180);
+  if (Math.hypot(east, north) < 1e-9) return fallback;
+  return Math.atan2(east, north) * 180 / Math.PI;
 }
 
 function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
@@ -1177,10 +1279,16 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
         const fraction = scaled - segment;
         const from = runner.path[segment];
         const to = runner.path[segment + 1];
-        const bearing = Math.atan2(
-          (to[1] - from[1]) * Math.cos(from[0] * Math.PI / 180),
-          to[0] - from[0]
-        ) * 180 / Math.PI;
+        const rawBearing = runner.shortRoute
+          ? runner.stableBearing
+          : trajectoryBearing(from, to, runner.stableBearing);
+        if (runner.displayBearing === undefined) {
+          runner.displayBearing = rawBearing;
+        } else {
+          const bearingDelta =
+            (rawBearing - runner.displayBearing + 540) % 360 - 180;
+          runner.displayBearing += bearingDelta * 0.16;
+        }
         runner.marker.setLatLng([
           from[0] + (to[0] - from[0]) * fraction,
           from[1] + (to[1] - from[1]) * fraction,
@@ -1189,7 +1297,10 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
         if (element) {
           element.style.opacity = String(opacity);
           const boat = element.querySelector("svg");
-          if (boat) boat.style.transform = `rotate(${bearing}deg)`;
+          if (boat) {
+            boat.style.transform =
+              `rotate(${runner.displayBearing}deg)`;
+          }
         }
       }
       state.trajectoryAnimationFrame = requestAnimationFrame(animate);
@@ -1211,6 +1322,7 @@ function hideTrajectory({ restoreView = true } = {}) {
   }
   const selectedMarker = globalMarkers.get(state.selectedMmsi);
   state.selectedMmsi = null;
+  selectedVesselLayer.clearLayers();
   if (selectedMarker) {
     selectedMarker.setStyle(globalMarkerStyle(selectedMarker._fix || {}));
     selectedMarker.closeTooltip();
@@ -1223,6 +1335,7 @@ function hideTrajectory({ restoreView = true } = {}) {
     }
   }
   globalProjectionLayer.clearLayers();
+  fishingActivityLayer.clearLayers();
   els.trajectoryPanel.classList.add("hidden");
   if (els.trajectoryPanel.parentElement !== els.mapWrap) {
     els.mapWrap.appendChild(els.trajectoryPanel);
@@ -1287,6 +1400,141 @@ async function loadGfwIdentity(mmsi) {
   } catch (err) {
     if (state.selectedMmsi === mmsi) {
       renderGfwIdentity({ configured: true, matched: false, error: "request_failed" });
+    }
+  }
+}
+
+const activityLabels = {
+  FISHING: "Apparent fishing",
+  ENCOUNTER: "Vessel encounter",
+  LOITERING: "Loitering",
+  PORT_VISIT: "Port visit",
+  GAP: "AIS gap",
+};
+
+function eventRegionText(event) {
+  const regions = event.regions || {};
+  const parts = [];
+  const protectedNames = (event.protected_areas || [])
+    .map((area) => area.name)
+    .filter(Boolean);
+  if (protectedNames.length) {
+    parts.push(protectedNames.slice(0, 1).join(", "));
+  } else if ((regions.mpaNoTake || []).length) {
+    parts.push("no-take MPA reference");
+  } else if ((regions.mpa || []).length) {
+    parts.push("marine protected area");
+  }
+  if ((regions.eez || []).length) parts.push("EEZ");
+  if ((regions.rfmo || []).length) {
+    parts.push(`RFMO ${regions.rfmo.slice(0, 2).join(", ")}`);
+  }
+  return parts.join(" · ");
+}
+
+function activityMarkerIcon(type) {
+  const kind = String(type || "").toLowerCase().replace("_", "-");
+  return L.divIcon({
+    className: "gfw-event-marker-wrap",
+    html: `<span class="gfw-event-marker gfw-event-${escapeHtml(kind)}">` +
+      `<span aria-hidden="true"></span></span>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+}
+
+function renderGfwActivity(data) {
+  fishingActivityLayer.clearLayers();
+  if (!data.configured) {
+    els.trajectoryActivity.innerHTML = "";
+    return;
+  }
+  const events = data.events || [];
+  if (!data.matched || !events.length) {
+    els.trajectoryActivity.innerHTML =
+      `<div class="trajectory-heading">Activity history</div>` +
+      `<div class="activity-empty">No Global Fishing Watch events were found for this vessel in the last year.</div>`;
+    return;
+  }
+
+  const counts = new Map();
+  for (const event of events) {
+    counts.set(event.type, (counts.get(event.type) || 0) + 1);
+    const regionText = eventRegionText(event);
+    const start = event.start ? new Date(event.start) : null;
+    const dateText = start && !Number.isNaN(start.getTime())
+      ? start.toISOString().slice(0, 10)
+      : "Date unavailable";
+    const marker = L.marker([event.lat, event.lon], {
+      icon: activityMarkerIcon(event.type),
+      zIndexOffset: 420,
+    });
+    marker.bindTooltip(
+      `<strong>${escapeHtml(activityLabels[event.type] || event.type)}</strong><br>` +
+      `${escapeHtml(dateText)}` +
+      `${regionText ? `<br>${escapeHtml(regionText)}` : ""}` +
+      `<br><span>Global Fishing Watch</span>`,
+      { direction: "top", opacity: 0.96 }
+    );
+    marker.addTo(fishingActivityLayer);
+  }
+
+  const chips = Array.from(counts.entries())
+    .map(([type, count]) =>
+      `<span class="activity-chip activity-chip-${escapeHtml(type.toLowerCase())}">` +
+      `<b>${count}</b> ${escapeHtml(activityLabels[type] || type)}</span>`
+    )
+    .join("");
+  const rows = events.slice(0, 6).map((event) => {
+    const regionText = eventRegionText(event);
+    const when = event.start
+      ? new Date(event.start).toISOString().slice(0, 10)
+      : "Date unavailable";
+    const duration = Number.isFinite(Number(event.duration_hours))
+      ? `${Number(event.duration_hours).toFixed(1)}h`
+      : "";
+    return (
+      `<button class="activity-row" type="button" data-event-id="${escapeHtml(event.id || "")}">` +
+      `<span class="activity-dot activity-dot-${escapeHtml(event.type.toLowerCase())}"></span>` +
+      `<span><strong>${escapeHtml(activityLabels[event.type] || event.type)}</strong>` +
+      `<small>${escapeHtml([when, duration, regionText].filter(Boolean).join(" · "))}</small></span>` +
+      `</button>`
+    );
+  }).join("");
+  els.trajectoryActivity.innerHTML =
+    `<div class="trajectory-heading">Activity history · past year</div>` +
+    `<div class="activity-chips">${chips}</div>` +
+    `<div class="activity-list">${rows}</div>` +
+    `<p class="activity-caveat">${escapeHtml(data.caveat || "")}</p>`;
+  for (const row of els.trajectoryActivity.querySelectorAll(".activity-row")) {
+    row.addEventListener("click", () => {
+      const event = events.find((item) => String(item.id || "") === row.dataset.eventId);
+      if (event) map.flyTo([event.lat, event.lon], Math.max(map.getZoom(), 8), {
+        duration: 0.8,
+      });
+    });
+  }
+}
+
+async function loadGfwActivity(mmsi) {
+  if (state.gfwActivityCache.has(mmsi)) {
+    renderGfwActivity(state.gfwActivityCache.get(mmsi));
+    return;
+  }
+  els.trajectoryActivity.innerHTML =
+    `<div class="trajectory-heading">Activity history</div>` +
+    `<div class="activity-loading"><span></span>Reviewing fishing, encounter, port, loitering and AIS-gap records…</div>`;
+  try {
+    const data = await getJson(
+      `/api/global/${encodeURIComponent(mmsi)}/gfw/activity`
+    );
+    state.gfwActivityCache.set(mmsi, data);
+    if (state.selectedMmsi === mmsi) renderGfwActivity(data);
+  } catch (_err) {
+    if (state.selectedMmsi === mmsi) {
+      els.trajectoryActivity.innerHTML =
+        `<div class="trajectory-heading">Activity history</div>` +
+        `<div class="activity-empty">Activity records are temporarily unavailable.</div>`;
     }
   }
 }
@@ -1411,6 +1659,7 @@ async function showTrajectory(
   }
   const selectedMarker = globalMarkers.get(v.mmsi);
   if (selectedMarker) selectedMarker.setStyle(globalMarkerStyle(v));
+  renderSelectedVesselOverlay(v);
   if (!inPlaceRefresh) {
     stopTrajectoryAnimation();
     globalProjectionLayer.clearLayers();
@@ -1442,7 +1691,10 @@ async function showTrajectory(
   els.trajectoryContext.innerHTML = contextLines.length
     ? `<div class="trajectory-heading">Location alerts</div>${contextLines.map((line) => `<div>${line}</div>`).join("")}`
     : `<div class="context-clear">No monitored location or identity-list alerts at this position.</div>`;
-  if (!inPlaceRefresh) loadGfwIdentity(v.mmsi);
+  if (!inPlaceRefresh) {
+    loadGfwIdentity(v.mmsi);
+    loadGfwActivity(v.mmsi);
+  }
   if (els.trajectoryPanel.parentElement !== els.eventlog) {
     els.eventlog.appendChild(els.trajectoryPanel);
   }
@@ -1624,8 +1876,24 @@ async function showTrajectory(
       interactive: false,
       className: "trajectory-radius",
     }).addTo(globalProjectionLayer);
+    const routeOriginPoint = map.latLngToLayerPoint(path[0]);
+    const routeSpanPx = path.reduce(
+      (largest, point) => Math.max(
+        largest,
+        routeOriginPoint.distanceTo(map.latLngToLayerPoint(point))
+      ),
+      0
+    );
+    const shortRoute =
+      Number(scenario.distance_nm || 0) < 0.4 ||
+      routeSpanPx < 10;
+    const stableBearing = trajectoryBearing(
+      path[0],
+      end,
+      Number(v.course) || Number(v.heading) || 0
+    );
     const runner = L.marker(initialPosition, {
-      icon: trajectoryRunnerIcon(color),
+      icon: trajectoryRunnerIcon(color, shortRoute),
       interactive: false,
       keyboard: false,
       zIndexOffset: 1000,
@@ -1635,6 +1903,9 @@ async function showTrajectory(
       marker: runner,
       path,
       phaseOffset,
+      shortRoute,
+      stableBearing,
+      displayBearing: stableBearing,
     });
   });
   const drivers = prediction.uncertainty_drivers || [];
@@ -1717,6 +1988,7 @@ function applyGlobalFix(v) {
     `${contextFlags.length ? ` · ${contextFlags.join(" · ")}` : ""}`
   );
   if (state.selectedMmsi === v.mmsi) {
+    renderSelectedVesselOverlay(v);
     const resumedAis = state.selectedVessel?.dark && !v.dark;
     if (resumedAis) showTrajectory(v);
     else refreshSelectedVessel(v);
