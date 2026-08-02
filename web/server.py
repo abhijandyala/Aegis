@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -50,6 +51,8 @@ from data.global_fishing_watch import GlobalFishingWatchClient
 from data.maritime_context import maritime_context
 from data.ocean_conditions import OceanConditionsClient
 from data.weather_conditions import WeatherConditionsClient
+from data.world_ports import WorldPortIndexClient
+from data.geocoding import GeocodingClient
 from aegis.graph import build_mission
 from aegis.main import run_frame_scored
 from aegis.fusion import assoc_provenance as main_assoc_source
@@ -241,6 +244,8 @@ def build_app(cache: dict) -> web.Application:
     )
     app["ocean_client"] = OceanConditionsClient()
     app["weather_client"] = WeatherConditionsClient()
+    app["ports_client"] = WorldPortIndexClient()
+    app["geocoding_client"] = GeocodingClient()
     app["ocean_tasks"] = set()
     app["ocean_pending"] = set()
     app["weather_pending"] = set()
@@ -519,6 +524,82 @@ def build_app(cache: dict) -> web.Application:
     async def api_context_layers(request: web.Request) -> web.Response:
         return web.json_response({"layers": maritime_context().layer_payloads()})
 
+    async def api_nearby_context(request: web.Request) -> web.Response:
+        try:
+            if "lat" in request.query and "lon" in request.query:
+                lat = max(-90.0, min(90.0, float(request.query["lat"])))
+                lon = max(-180.0, min(180.0, float(request.query["lon"])))
+                radius_km = max(
+                    10.0,
+                    min(500.0, float(request.query.get("radius_km", "150"))),
+                )
+                lat_delta = radius_km / 111.32
+                lon_delta = lat_delta / max(
+                    0.15,
+                    math.cos(math.radians(lat)),
+                )
+                west, east = lon - lon_delta, lon + lon_delta
+                south, north = lat - lat_delta, lat + lat_delta
+                center = (lat, lon)
+                scope = "selected_vessel"
+            else:
+                west = float(request.query["west"])
+                south = float(request.query["south"])
+                east = float(request.query["east"])
+                north = float(request.query["north"])
+                center = (
+                    (south + north) / 2,
+                    (west + east) / 2,
+                )
+                radius_km = None
+                scope = "map_view"
+        except (KeyError, TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Invalid geographic bounds")
+
+        west = max(-180.0, min(180.0, west))
+        east = max(-180.0, min(180.0, east))
+        south = max(-90.0, min(90.0, south))
+        north = max(-90.0, min(90.0, north))
+        if west >= east or south >= north:
+            return web.json_response({
+                "scope": scope,
+                "ports": [],
+                "source": "NGA World Port Index",
+            })
+        ports = await app["ports_client"].ports(
+            west,
+            south,
+            east,
+            north,
+            center=center,
+            limit=30,
+        )
+        if radius_km is not None:
+            ports = [
+                port
+                for port in ports
+                if float(port.get("distance_km", float("inf"))) <= radius_km
+            ]
+        return web.json_response({
+            "scope": scope,
+            "radius_km": radius_km,
+            "ports": ports[:12],
+            "source": "NGA World Port Index",
+        })
+
+    async def api_geocode(request: web.Request) -> web.Response:
+        query = " ".join(request.query.get("q", "").split())
+        if len(query) < 2:
+            return web.json_response({"query": query, "places": []})
+        if len(query) > 160:
+            raise web.HTTPBadRequest(text="Search query is too long")
+        places = await app["geocoding_client"].search(query)
+        return web.json_response({
+            "query": query,
+            "places": places,
+            "source": "OpenStreetMap Nominatim",
+        })
+
     async def api_gfw_identity(request: web.Request) -> web.Response:
         mmsi = int(request.match_info["mmsi"])
         client = app["gfw_client"]
@@ -577,6 +658,8 @@ def build_app(cache: dict) -> web.Application:
     app.router.add_post("/api/global/pin", api_global_pin)
     app.router.add_get(r"/api/global/{mmsi:\d{9}}/prediction", api_dark_prediction)
     app.router.add_get("/api/context/layers", api_context_layers)
+    app.router.add_get("/api/context/nearby", api_nearby_context)
+    app.router.add_get("/api/geocode", api_geocode)
     app.router.add_get(r"/api/global/{mmsi:\d{9}}/gfw", api_gfw_identity)
     app.router.add_get(
         r"/api/global/{mmsi:\d{9}}/gfw/activity",

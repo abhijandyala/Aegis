@@ -42,8 +42,9 @@
     info.setAttribute("aria-hidden", "true");
     more.setAttribute("aria-expanded", "false");
     intro.classList.add("is-launching");
+    document.body.classList.remove("intro-active");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(finishIntro, reducedMotion ? 1150 : 3900);
+    window.setTimeout(finishIntro, reducedMotion ? 1150 : 4000);
   }
 
   start.addEventListener("click", startIntro);
@@ -61,7 +62,7 @@
     if (event.animationName === "intro-door-right") finishIntro();
   });
 
-  requestAnimationFrame(() => intro.classList.add("is-ready"));
+  intro.classList.add("is-ready");
 
   setupGlobe(canvas, earthHost)
     .then((cleanup) => {
@@ -145,19 +146,18 @@ async function setupGlobe(canvas, host) {
     geometry,
     new THREE.MeshStandardMaterial({
       map: cloudsTexture,
+      alphaMap: cloudsTexture,
+      color: 0xffffff,
       transparent: true,
-      opacity: 0.42,
-      blending: THREE.AdditiveBlending,
+      opacity: 0.38,
+      alphaTest: 0.015,
+      blending: THREE.NormalBlending,
       depthWrite: false,
     }),
   );
   clouds.rotation.y = earth.rotation.y;
   clouds.scale.setScalar(1.008);
   earthGroup.add(clouds);
-
-  const atmosphere = new THREE.Mesh(geometry, makeFresnelMaterial(THREE));
-  atmosphere.scale.setScalar(1.025);
-  earthGroup.add(atmosphere);
 
   const glareTexture = makeGlareTexture(THREE);
   const glareMaterial = new THREE.SpriteMaterial({
@@ -216,7 +216,6 @@ async function setupGlobe(canvas, host) {
     earth.rotation.y += delta * 0.14;
     cityLights.rotation.y += delta * 0.14;
     clouds.rotation.y += delta * 0.19;
-    atmosphere.rotation.y += delta * 0.145;
     fineStars.rotation.y -= delta * 0.0007;
     brightStars.rotation.y -= delta * 0.0004;
     renderer.render(scene, camera);
@@ -238,7 +237,6 @@ async function setupGlobe(canvas, host) {
     earth.material.dispose();
     cityLights.material.dispose();
     clouds.material.dispose();
-    atmosphere.material.dispose();
     fineStars.geometry.dispose();
     fineStars.material.dispose();
     brightStars.geometry.dispose();
@@ -292,44 +290,4 @@ function makeGlareTexture(THREE) {
   context.fillStyle = gradient;
   context.fillRect(0, 0, 512, 512);
   return new THREE.CanvasTexture(glareCanvas);
-}
-
-function makeFresnelMaterial(THREE) {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      rimColor: { value: new THREE.Color(0x61dbf5) },
-      facingColor: { value: new THREE.Color(0x000000) },
-      fresnelBias: { value: 0.08 },
-      fresnelScale: { value: 1.15 },
-      fresnelPower: { value: 4.2 },
-    },
-    vertexShader: `
-      uniform float fresnelBias;
-      uniform float fresnelScale;
-      uniform float fresnelPower;
-      varying float vReflectionFactor;
-
-      void main() {
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
-        vec3 incident = worldPosition.xyz - cameraPosition;
-        vReflectionFactor = fresnelBias + fresnelScale *
-          pow(1.0 + dot(normalize(incident), worldNormal), fresnelPower);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 rimColor;
-      uniform vec3 facingColor;
-      varying float vReflectionFactor;
-
-      void main() {
-        float factor = clamp(vReflectionFactor, 0.0, 1.0);
-        gl_FragColor = vec4(mix(facingColor, rimColor, factor), factor);
-      }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
 }

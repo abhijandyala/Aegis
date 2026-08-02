@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="dashboard.css" />
-<link rel="stylesheet" href="onboarding.css?v=20260802-intro3" />
+<link rel="stylesheet" href="dashboard.css?v=20260802-context4" />
+<link rel="stylesheet" href="onboarding.css?v=20260802-intro8" />
 </head>
 <body class="intro-active">
 <section id="aegis-intro" class="aegis-intro" aria-label="Welcome to Aegis">
@@ -20,6 +20,9 @@
   <div class="intro-copy">
     <p class="intro-kicker">Save the seas with</p>
     <h1 class="intro-title">Aegis</h1>
+  </div>
+
+  <div class="intro-controls">
     <p class="intro-subtitle">Maritime awareness for the moments AIS goes quiet.</p>
     <div class="intro-actions">
       <button id="intro-start" class="intro-button intro-button-primary" type="button">
@@ -111,13 +114,18 @@
           </p>
         </div>
       </section>
+      <section id="world-search" class="world-search" aria-label="Search the world">
+        <button id="world-search-toggle" class="world-search-toggle" type="button" aria-label="Search locations" aria-expanded="false">
+          <span aria-hidden="true"></span>
+        </button>
+        <form id="world-search-form" class="world-search-form">
+          <input id="world-search-input" class="world-search-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search anywhere in the world" aria-label="Search anywhere in the world" />
+        </form>
+        <div id="world-search-results" class="world-search-results hidden" aria-live="polite"></div>
+      </section>
       <section id="trajectory-panel" class="trajectory-panel hidden" aria-live="polite">
         <button id="trajectory-close" class="trajectory-close" aria-label="Close trajectory details">Close</button>
         <div id="trajectory-name" class="trajectory-name">Contact</div>
-        <div id="trajectory-meta" class="trajectory-meta"></div>
-        <div id="trajectory-context" class="trajectory-context"></div>
-        <div id="trajectory-gfw" class="trajectory-context"></div>
-        <div id="trajectory-activity" class="trajectory-activity"></div>
         <div id="trajectory-risk" class="trajectory-context"></div>
         <div id="trajectory-environment" class="trajectory-environment"></div>
         <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
@@ -129,6 +137,11 @@
         <p id="trajectory-note" class="trajectory-note">
           Route estimates appear only after a vessel stops reporting its position.
         </p>
+        <div id="trajectory-meta" class="trajectory-meta"></div>
+        <div id="trajectory-context" class="trajectory-context"></div>
+        <div id="trajectory-nearby" class="trajectory-nearby"></div>
+        <div id="trajectory-gfw" class="trajectory-context"></div>
+        <div id="trajectory-activity" class="trajectory-activity"></div>
       </section>
       <div id="stats-overlay">
         <div class="stat"><span id="id-switch-count">0</span><label>identity changes</label></div>
@@ -204,7 +217,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="onboarding.js?v=20260802-intro2"></script>
-<script src="dashboard.js"></script>
+<script src="onboarding.js?v=20260802-intro7"></script>
+<script src="dashboard.js?v=20260802-context2"></script>
 </body>
 </html>

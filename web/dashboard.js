@@ -39,6 +39,11 @@ const els = {
   fishingIntelligenceToggle: document.getElementById("fishing-intelligence-toggle"),
   fishingIntelligenceBody: document.getElementById("fishing-intelligence-body"),
   fishingIntelligenceNote: document.getElementById("fishing-intelligence-note"),
+  worldSearch: document.getElementById("world-search"),
+  worldSearchToggle: document.getElementById("world-search-toggle"),
+  worldSearchForm: document.getElementById("world-search-form"),
+  worldSearchInput: document.getElementById("world-search-input"),
+  worldSearchResults: document.getElementById("world-search-results"),
   banner: document.getElementById("banner"),
   briefList: document.getElementById("brief-list"),
   jtmsFacts: document.getElementById("jtms-facts"),
@@ -52,6 +57,7 @@ const els = {
   trajectoryName: document.getElementById("trajectory-name"),
   trajectoryMeta: document.getElementById("trajectory-meta"),
   trajectoryContext: document.getElementById("trajectory-context"),
+  trajectoryNearby: document.getElementById("trajectory-nearby"),
   trajectoryGfw: document.getElementById("trajectory-gfw"),
   trajectoryActivity: document.getElementById("trajectory-activity"),
   trajectoryRisk: document.getElementById("trajectory-risk"),
@@ -88,6 +94,11 @@ const state = {
   gfwCache: new Map(),
   gfwActivityCache: new Map(),
   gfwLayerMetadataLoaded: false,
+  nearbyContext: null,
+  contextRequestId: 0,
+  contextRefreshTimer: null,
+  searchRequestId: 0,
+  searchTimer: null,
   localView: null,
   preSelectionView: null,
   lastFrameRisk: null,
@@ -298,12 +309,122 @@ for (const button of document.querySelectorAll(".intel-layer")) {
   });
 }
 
+function setWorldSearchOpen(open) {
+  els.worldSearch.classList.toggle("expanded", open);
+  els.worldSearchToggle.setAttribute("aria-expanded", String(open));
+  if (open) {
+    window.setTimeout(() => els.worldSearchInput.focus(), 180);
+  } else {
+    window.clearTimeout(state.searchTimer);
+    els.worldSearchInput.value = "";
+    els.worldSearchResults.innerHTML = "";
+    els.worldSearchResults.classList.add("hidden");
+  }
+}
+
+function flyToSearchResult(place) {
+  if (state.selectedMmsi !== null) {
+    hideTrajectory({ restoreView: false });
+  }
+  const bounds = place.bounds && L.latLngBounds(place.bounds);
+  if (bounds?.isValid()) {
+    map.flyToBounds(bounds, {
+      animate: true,
+      duration: 1.45,
+      easeLinearity: 0.18,
+      padding: [70, 70],
+      maxZoom: 11,
+    });
+  } else {
+    map.flyTo([place.lat, place.lon], 9, {
+      animate: true,
+      duration: 1.45,
+      easeLinearity: 0.18,
+    });
+  }
+  setWorldSearchOpen(false);
+}
+
+function renderSearchResults(places) {
+  if (!places.length) {
+    els.worldSearchResults.innerHTML =
+      `<p class="world-search-empty">No matching place found.</p>`;
+    els.worldSearchResults.classList.remove("hidden");
+    return;
+  }
+  els.worldSearchResults.innerHTML = places.map((place, index) => {
+    const parts = String(place.name || "Place").split(",");
+    const primary = parts.shift()?.trim() || "Place";
+    const secondary = parts.join(",").trim();
+    return (
+      `<button type="button" class="world-search-result" data-result="${index}">` +
+      `<span class="world-search-pin" aria-hidden="true"></span>` +
+      `<span><strong>${escapeHtml(primary)}</strong>` +
+      `<small>${escapeHtml(secondary || place.type || "")}</small></span></button>`
+    );
+  }).join("");
+  els.worldSearchResults.classList.remove("hidden");
+  for (const button of els.worldSearchResults.querySelectorAll(".world-search-result")) {
+    button.addEventListener("click", () => {
+      const place = places[Number(button.dataset.result)];
+      if (place) flyToSearchResult(place);
+    });
+  }
+}
+
+async function searchWorld() {
+  const query = els.worldSearchInput.value.trim();
+  const requestId = ++state.searchRequestId;
+  if (query.length < 2) {
+    els.worldSearchResults.classList.add("hidden");
+    els.worldSearchResults.innerHTML = "";
+    return;
+  }
+  els.worldSearchResults.innerHTML =
+    `<div class="world-search-loading"><span></span>Searching places…</div>`;
+  els.worldSearchResults.classList.remove("hidden");
+  try {
+    const data = await getJson(`/api/geocode?q=${encodeURIComponent(query)}`);
+    if (requestId === state.searchRequestId) {
+      renderSearchResults(data.places || []);
+    }
+  } catch (_err) {
+    if (requestId === state.searchRequestId) {
+      els.worldSearchResults.innerHTML =
+        `<p class="world-search-empty">Place search is temporarily unavailable.</p>`;
+    }
+  }
+}
+
+L.DomEvent.disableClickPropagation(els.worldSearch);
+els.worldSearchToggle.addEventListener("click", () => {
+  setWorldSearchOpen(!els.worldSearch.classList.contains("expanded"));
+});
+els.worldSearchInput.addEventListener("input", () => {
+  window.clearTimeout(state.searchTimer);
+  state.searchTimer = window.setTimeout(searchWorld, 380);
+});
+els.worldSearchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    setWorldSearchOpen(false);
+  }
+});
+els.worldSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const first = els.worldSearchResults.querySelector(".world-search-result");
+  if (first) first.click();
+  else searchWorld();
+});
+
 const zonesLayer = L.featureGroup().addTo(map); // needs getBounds(); plain layerGroup lacks it
 const localLayer = L.layerGroup().addTo(map);
 const globalLayer = L.layerGroup();
 const globalProjectionLayer = L.layerGroup().addTo(globalLayer);
 const selectedVesselLayer = L.layerGroup().addTo(globalLayer);
 const fishingActivityLayer = L.layerGroup().addTo(globalLayer);
+const nearbyContextLayer = L.layerGroup().addTo(globalLayer);
 map.createPane("vesselPane");
 map.getPane("vesselPane").style.zIndex = 390;
 map.getPane("vesselPane").style.opacity = "1";
@@ -319,6 +440,9 @@ function restoreVesselPane() {
 map.on("zoomend", () => {
   globalRenderer._update();
   restoreVesselPane();
+});
+map.on("moveend", () => {
+  if (state.globalLayerOn) refreshNearbyContext();
 });
 
 function drawZones(zones) {
@@ -1328,8 +1452,10 @@ function hideTrajectory({ restoreView = true } = {}) {
     selectedMarker.closeTooltip();
   }
   state.selectedVessel = null;
+  els.trajectoryNearby.innerHTML = "";
   if (state.globalLayerOn) {
     renderLivePanelEmptyState();
+    refreshNearbyContext();
     if (document.getElementById("tab-eval").classList.contains("active")) {
       renderLiveChecks();
     }
@@ -1667,6 +1793,7 @@ async function showTrajectory(
   const start = [Number(v.lat), Number(v.lon)];
   const context = v.context || {};
   refreshSelectedVessel(v);
+  refreshNearbyContext();
 
   const contextLines = [];
   if (context.ofac) {
@@ -2009,6 +2136,135 @@ for (const button of document.querySelectorAll(".trajectory-mode")) {
   });
 }
 
+function portDetail(port, selectedScope) {
+  const details = [
+    port.country,
+    selectedScope && Number.isFinite(Number(port.distance_km))
+      ? `${Number(port.distance_km).toFixed(1)} km`
+      : "",
+    port.port_of_entry ? "port of entry" : "",
+    port.pilot_required ? "pilot required" : "",
+    port.tug_assist ? "tug assistance" : "",
+  ].filter(Boolean);
+  return details.join(" · ");
+}
+
+function nearbyPortRows(ports, selectedScope) {
+  if (!ports.length) {
+    return `<p class="nearby-empty">No indexed ports in this area.</p>`;
+  }
+  return ports.slice(0, selectedScope ? 8 : 6).map((port) =>
+    `<button class="nearby-row" type="button" ` +
+    `data-lat="${Number(port.lat)}" data-lon="${Number(port.lon)}">` +
+    `<span class="nearby-symbol nearby-symbol-port" aria-hidden="true"></span>` +
+    `<span><strong>${escapeHtml(port.name)}</strong>` +
+    `<small>${escapeHtml(portDetail(port, selectedScope))}</small></span>` +
+    `</button>`
+  ).join("");
+}
+
+function bindNearbyRows(container) {
+  for (const row of container.querySelectorAll(".nearby-row")) {
+    row.addEventListener("click", () => {
+      const lat = Number(row.dataset.lat);
+      const lon = Number(row.dataset.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        map.flyTo([lat, lon], Math.max(map.getZoom(), 8), {
+          duration: 0.8,
+        });
+      }
+    });
+  }
+}
+
+function renderNearbyMapFeatures(ports) {
+  nearbyContextLayer.clearLayers();
+  const permanentLabels = map.getZoom() >= 6;
+  for (const port of ports.slice(0, 12)) {
+    const marker = L.circleMarker([port.lat, port.lon], {
+      radius: 4,
+      color: "#b8f1dd",
+      weight: 1.5,
+      fillColor: "#163e35",
+      fillOpacity: 0.9,
+    });
+    marker.bindTooltip(escapeHtml(port.name), {
+      permanent: permanentLabels,
+      direction: "right",
+      offset: [7, 0],
+      className: "port-map-label",
+    });
+    marker.on("click", () => {
+      map.flyTo([port.lat, port.lon], Math.max(map.getZoom(), 9), {
+        duration: 0.8,
+      });
+    });
+    marker.addTo(nearbyContextLayer);
+  }
+}
+
+function renderNearbyContext(data) {
+  state.nearbyContext = data;
+  const selectedScope = data.scope === "selected_vessel";
+  const ports = data.ports || [];
+  renderNearbyMapFeatures(ports);
+  const content =
+    `<div class="nearby-heading">${selectedScope ? "Nearby context" : "Map context"}</div>` +
+    `<div class="nearby-section-title">` +
+    `${selectedScope ? `Ports within ${Number(data.radius_km || 150).toFixed(0)} km` : "Ports in view"}` +
+    `<span>${ports.length}</span></div>` +
+    `<div class="nearby-list">${nearbyPortRows(ports, selectedScope)}</div>` +
+    `<p class="nearby-source">NGA World Port Index · click a port to locate it</p>`;
+  if (selectedScope && state.selectedVessel) {
+    els.trajectoryNearby.innerHTML = content;
+    bindNearbyRows(els.trajectoryNearby);
+    return;
+  }
+  const rail = document.getElementById("live-rail-context");
+  if (rail) {
+    rail.innerHTML = content;
+    bindNearbyRows(rail);
+  }
+}
+
+function refreshNearbyContext() {
+  window.clearTimeout(state.contextRefreshTimer);
+  state.contextRefreshTimer = window.setTimeout(async () => {
+    const requestId = ++state.contextRequestId;
+    let url;
+    if (state.selectedVessel) {
+      const vessel = state.selectedVessel;
+      url =
+        `/api/context/nearby?lat=${encodeURIComponent(vessel.lat)}` +
+        `&lon=${encodeURIComponent(vessel.lon)}&radius_km=150`;
+      els.trajectoryNearby.innerHTML =
+        `<div class="nearby-heading">Nearby context</div>` +
+        `<div class="nearby-loading"><span></span>Loading nearby ports…</div>`;
+    } else {
+      const bounds = map.getBounds();
+      url =
+        `/api/context/nearby?west=${encodeURIComponent(bounds.getWest())}` +
+        `&south=${encodeURIComponent(bounds.getSouth())}` +
+        `&east=${encodeURIComponent(bounds.getEast())}` +
+        `&north=${encodeURIComponent(bounds.getNorth())}`;
+    }
+    try {
+      const data = await getJson(url);
+      if (requestId === state.contextRequestId) renderNearbyContext(data);
+    } catch (_err) {
+      if (requestId !== state.contextRequestId) return;
+      const target = state.selectedVessel
+        ? els.trajectoryNearby
+        : document.getElementById("live-rail-context");
+      if (target) {
+        target.innerHTML =
+          `<div class="nearby-heading">Map context</div>` +
+          `<p class="nearby-empty">Port context is temporarily unavailable.</p>`;
+      }
+    }
+  }, 220);
+}
+
 function globalStatusText() {
   if (state.globalLive) {
     return `Vessel feed · ${globalContactCounts().total.toLocaleString()} contacts`;
@@ -2029,7 +2285,9 @@ function renderLiveRail(status) {
       `<div class="log-line log-fusion"><span class="tag">Updates</span><span id="live-rail-messages"></span></div>` +
       `<div class="log-line log-event"><span class="tag">Identity</span><span id="live-rail-identities"></span></div>` +
       `<div class="log-line log-zone"><span class="tag">Reference</span>protected waters · ports · coastline · infrastructure</div>` +
-      `<div class="log-line log-log"><span class="tag">Registry</span>independent identity review on selection</div>`;
+      `<div class="log-line log-log"><span class="tag">Registry</span>independent identity review on selection</div>` +
+      `<div id="live-rail-context" class="live-rail-context"></div>`;
+    refreshNearbyContext();
   }
   const counts = globalContactCounts();
   const silenceThreshold = aisSilenceThreshold();
