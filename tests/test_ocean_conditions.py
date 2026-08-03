@@ -2,7 +2,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from data.ocean_conditions import OceanConditionsClient
+from data.ocean_conditions import OceanConditionsClient, _rounded_or_none
+
+
+def test_missing_copernicus_components_are_json_safe():
+    assert _rounded_or_none(float("nan"), 4) is None
+    assert _rounded_or_none(float("inf"), 4) is None
+    assert _rounded_or_none("0.12345", 4) == 0.1235
 
 
 def test_different_regions_fetch_concurrently():
