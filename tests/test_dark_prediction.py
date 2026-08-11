@@ -1,4 +1,5 @@
 import math
+import time
 
 from data.dark_prediction import predict_dark_vessel
 
@@ -159,3 +160,105 @@ def test_extreme_reported_turn_rate_settles_instead_of_spiraling():
             for start, end in zip(segment_bearings, segment_bearings[1:])
         )
         assert total_turn < 220
+
+
+def test_full_silence_gap_uses_adaptive_steps_and_separate_outlook():
+    started = time.perf_counter()
+    prediction = predict_dark_vessel(_dark_vessel(age_s=23 * 3600 + 17 * 60))
+    runtime_s = time.perf_counter() - started
+
+    assert prediction["modeled_silence_minutes"] == 1397.0
+    assert prediction["path_minutes_from_last_fix"] == 1427.0
+    assert prediction["horizon_minutes"] == 30
+    assert prediction["unmodeled_silence_minutes"] == 0
+    assert prediction["adaptive_step_counts"]["2"] > 0
+    assert prediction["adaptive_step_counts"]["5"] > 0
+    assert prediction["adaptive_step_counts"]["15"] > 0
+    assert prediction["path_timeline_minutes"][
+        prediction["current_path_index"]
+    ] == 1397.0
+    assert prediction["behavior_transition_count"] > 0
+    assert runtime_s < 5.0
+
+
+def test_longer_silence_produces_larger_elapsed_search_region():
+    one_hour = predict_dark_vessel(_dark_vessel(age_s=3600))
+    six_hours = predict_dark_vessel(_dark_vessel(age_s=6 * 3600))
+    twenty_three_hours = predict_dark_vessel(_dark_vessel(age_s=23 * 3600))
+
+    reaches = [
+        prediction["elapsed_confidence_regions"][-1]["reach_radius_m"]
+        for prediction in (one_hour, six_hours, twenty_three_hours)
+    ]
+    assert reaches[0] < reaches[1] < reaches[2]
+
+
+def test_confidence_regions_are_nested_and_probabilities_normalized():
+    prediction = predict_dark_vessel(_dark_vessel(age_s=8 * 3600))
+
+    for key in ("elapsed_confidence_regions", "forecast_confidence_regions"):
+        regions = prediction[key]
+        assert [region["level"] for region in regions] == [50, 80, 95]
+        assert [region["sample_count"] for region in regions] == [300, 480, 570]
+        assert all(len(region["polygon"]) >= 4 for region in regions)
+        assert (
+            regions[0]["spread_radius_m"]
+            <= regions[1]["spread_radius_m"]
+            <= regions[2]["spread_radius_m"]
+        )
+    assert abs(
+        sum(scenario["probability"] for scenario in prediction["scenarios"]) - 1
+    ) < 0.001
+
+
+def test_live_environment_is_not_applied_to_historical_gap():
+    vessel = _dark_vessel(age_s=6 * 3600)
+    current = {
+        "configured": True,
+        "available": True,
+        "source": "Copernicus Marine Service",
+        "center": {
+            "east_mps": 0.8,
+            "north_mps": 0.2,
+            "speed_mps": 0.8246,
+            "bearing_deg": 76.0,
+        },
+        "vectors": [],
+    }
+    baseline = predict_dark_vessel(vessel)
+    with_current = predict_dark_vessel(vessel, current)
+
+    assert (
+        with_current["elapsed_confidence_regions"]
+        == baseline["elapsed_confidence_regions"]
+    )
+    assert (
+        with_current["forecast_confidence_regions"]
+        != baseline["forecast_confidence_regions"]
+    )
+    evidence = with_current["environment_evidence"]
+    assert evidence["historical_gap"]["applied"] is False
+    assert evidence["forward_outlook"]["current_applied"] is True
+
+
+def test_representative_paths_remain_outside_synthetic_land(monkeypatch):
+    class Terrain:
+        @staticmethod
+        def terrain_status(lat, lon):
+            return {
+                "available": True,
+                "on_land": lon > -122.995,
+            }
+
+    monkeypatch.setattr(
+        "data.dark_prediction.maritime_context",
+        lambda: Terrain(),
+    )
+    prediction = predict_dark_vessel(_dark_vessel(age_s=2 * 3600))
+
+    assert prediction["terrain_constrained_samples"] > 0
+    assert all(
+        point[1] <= -122.995
+        for scenario in prediction["scenarios"]
+        for point in scenario["path"]
+    )

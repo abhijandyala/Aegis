@@ -1,5 +1,5 @@
 "use strict";
-/* Aegis dashboard. The local safety and financial-risk values are supplied
+/* Aegis dashboard. The local safety and response-planning values are supplied
  * by the server:
  * every value drawn for the local-pack tracks/zones/alerts is a verbatim
  * field from the server's FrameDelta. The one addition
@@ -34,7 +34,6 @@ const els = {
   btnRetract: document.getElementById("btn-retract"),
   btnGlobalLayer: document.getElementById("btn-global-layer"),
   btnBathymetry: document.getElementById("btn-bathymetry"),
-  globalBadge: document.getElementById("global-badge"),
   fishingIntelligence: document.getElementById("fishing-intelligence"),
   fishingIntelligenceToggle: document.getElementById("fishing-intelligence-toggle"),
   fishingIntelligenceBody: document.getElementById("fishing-intelligence-body"),
@@ -65,6 +64,9 @@ const els = {
   trajectoryOptions: document.getElementById("trajectory-options"),
   trajectoryHeading: document.getElementById("trajectory-heading"),
   trajectoryNote: document.getElementById("trajectory-note"),
+  overviewSelection: document.getElementById("overview-selection"),
+  tabMoreToggle: document.getElementById("tab-more-toggle"),
+  tabMoreMenu: document.getElementById("tab-more-menu"),
 };
 
 const state = {
@@ -79,10 +81,11 @@ const state = {
   assocMode: "global",
   packId: null,
   globalLayerOn: false,
-  globalLive: false, // true once a real aisstream.io fix has arrived
+  globalLive: false, // true once the selected real AIS provider has a fix
   globalVessels: new Map(),
   globalRevision: 0,
   globalStatus: {},
+  globalProviderFramed: null,
   selectedMmsi: null,
   selectedVessel: null,
   trajectoryMode: "all",
@@ -91,6 +94,7 @@ const state = {
   trajectoryRenderId: 0,
   predictionCache: new Map(),
   predictionPolls: new Set(),
+  selectedPredictionKey: null,
   gfwCache: new Map(),
   gfwActivityCache: new Map(),
   gfwLayerMetadataLoaded: false,
@@ -119,7 +123,10 @@ const globalMarkers = new Map(); // mmsi -> marker
 const map = L.map(els.map, {
   zoomControl: false,
   attributionControl: true,
-  worldCopyJump: true,
+  minZoom: 2,
+  maxBounds: [[-85, -180], [85, 180]],
+  maxBoundsViscosity: 1,
+  worldCopyJump: false,
 }).setView([20, 0], 3);
 
 const AegisZoomControl = L.Control.extend({
@@ -136,14 +143,25 @@ const AegisZoomControl = L.Control.extend({
     zoomOut.setAttribute("aria-label", "Zoom out");
     zoomIn.innerHTML = '<span aria-hidden="true"></span>';
     zoomOut.innerHTML = '<span aria-hidden="true"></span>';
+    const updateDisabledState = () => {
+      zoomIn.disabled = targetMap.getZoom() >= targetMap.getMaxZoom();
+      zoomOut.disabled = targetMap.getZoom() <= targetMap.getMinZoom();
+    };
+    this._updateDisabledState = updateDisabledState;
     L.DomEvent.disableClickPropagation(control);
     L.DomEvent.on(zoomIn, "click", () => targetMap.zoomIn());
     L.DomEvent.on(zoomOut, "click", () => targetMap.zoomOut());
+    targetMap.on("zoomend", updateDisabledState);
+    updateDisabledState();
     return control;
+  },
+  onRemove(targetMap) {
+    targetMap.off("zoomend", this._updateDisabledState);
   },
 });
 new AegisZoomControl().addTo(map);
 map.attributionControl.setPrefix(false);
+map.attributionControl.setPosition("bottomleft");
 
 const BoatCanvasRenderer = L.Canvas.extend({
   _updateCircle(layer) {
@@ -187,7 +205,10 @@ L.tileLayer(
   "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
   {
     subdomains: "abcd",
+    minZoom: 2,
     maxZoom: 19,
+    noWrap: true,
+    bounds: [[-85, -180], [85, 180]],
     updateWhenZooming: true,
     updateWhenIdle: false,
     keepBuffer: 3,
@@ -679,10 +700,10 @@ function renderRiskPanel(risk, scope) {
   const options = risk.items || [];
   const hasOptions = options.length > 0;
   const amount = hasOptions
-    ? `${options.length} costed response option${options.length === 1 ? "" : "s"}`
+    ? `${options.length} response option${options.length === 1 ? "" : "s"}`
     : "Monitoring only";
   const detail = hasOptions
-    ? `${escapeHtml(scope)} · options are conditional and are not added together`
+    ? `${escapeHtml(scope)} · review each option independently`
     : `${escapeHtml(scope)} · no response action indicated`;
   els.riskSummary.innerHTML =
     `<div class="risk-total"><span class="hint">Response planning</span>` +
@@ -693,22 +714,33 @@ function renderRiskPanel(risk, scope) {
     const div = document.createElement("div");
     div.className = `risk-card ${item.severity === "critical" ? "critical" : ""}`;
     div.innerHTML =
-      `<div class="risk-range">${formatUsd(item.low_usd)}–${formatUsd(item.high_usd)}</div>` +
+      `<div class="risk-priority">${item.severity === "critical" ? "Urgent review" : "Response option"}</div>` +
       `<div class="risk-label">${escapeHtml(item.label)}</div>` +
-      `<div class="risk-basis">${escapeHtml(item.assumption || "")}</div>` +
-      `<div class="risk-basis">${escapeHtml(item.basis || "")}</div>`;
+      `<div class="risk-basis">${escapeHtml(item.assumption || "")}</div>`;
     els.riskList.appendChild(div);
   }
   if (!hasOptions) {
     els.riskList.innerHTML =
       `<p class="hint">Monitoring live safety signals. No response action is currently triggered.</p>`;
-  } else if (risk.source) {
-    const source = document.createElement("p");
-    source.className = "hint risk-source";
-    source.textContent =
-      `Source: ${risk.source.agency} · ${risk.source.rate_schedule} · effective ${risk.source.effective_date}. ` +
-      "These are outside-government reimbursable rates.";
-    els.riskList.appendChild(source);
+  } else {
+    const reference = document.createElement("details");
+    reference.className = "risk-reference";
+    reference.innerHTML =
+      `<summary>Reference cost assumptions</summary>` +
+      `<p>Optional planning references—not incurred, quoted, or predicted costs.</p>` +
+      options.map((item) =>
+        `<div class="risk-reference-row">` +
+        `<strong>${escapeHtml(item.label)}</strong>` +
+        `<span>${formatUsd(item.low_usd)}–${formatUsd(item.high_usd)}</span>` +
+        `<small>${escapeHtml(item.basis || item.assumption || "")}</small>` +
+        `</div>`
+      ).join("") +
+      (risk.source
+        ? `<p>Source: ${escapeHtml(risk.source.agency)} · ` +
+          `${escapeHtml(risk.source.rate_schedule)} · effective ` +
+          `${escapeHtml(risk.source.effective_date)}. Outside-government reimbursable rates.</p>`
+        : "");
+    els.riskList.appendChild(reference);
   }
 }
 
@@ -805,12 +837,36 @@ els.packPicker.addEventListener("change", () => switchPack(els.packPicker.value)
 
 // ------------------------------------------------------------------ tabs
 
-for (const btn of document.querySelectorAll(".tab-btn")) {
+function activateSidebarPanel(panelId) {
+  const detailPanels = new Set(["tab-risk", "tab-brief", "tab-jtms", "tab-eval"]);
+  for (const button of document.querySelectorAll(".tab-btn, .tab-menu-option")) {
+    const targetId = button.dataset.panel || `tab-${button.dataset.tab}`;
+    button.classList.toggle("active", targetId === panelId);
+  }
+  els.tabMoreToggle.classList.toggle("active", detailPanels.has(panelId));
+  for (const panel of document.querySelectorAll(".tab-pane")) {
+    panel.classList.toggle("active", panel.id === panelId);
+  }
+}
+
+function setMoreMenuOpen(open) {
+  els.tabMoreMenu.classList.toggle("hidden", !open);
+  els.tabMoreToggle.setAttribute("aria-expanded", String(open));
+}
+
+for (const btn of document.querySelectorAll(".tab-btn, .tab-menu-option")) {
   btn.addEventListener("click", () => {
-    for (const b of document.querySelectorAll(".tab-btn")) b.classList.toggle("active", b === btn);
-    for (const p of document.querySelectorAll(".tab-pane")) p.classList.toggle("active", p.id === `tab-${btn.dataset.tab}`);
+    activateSidebarPanel(btn.dataset.panel || `tab-${btn.dataset.tab}`);
+    setMoreMenuOpen(false);
   });
 }
+els.tabMoreToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setMoreMenuOpen(els.tabMoreMenu.classList.contains("hidden"));
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".tab-more")) setMoreMenuOpen(false);
+});
 
 // -------------------------------------------------------------------- jtms
 
@@ -1152,7 +1208,7 @@ function renderSelectedVesselOverlay(v) {
   const bearing = Number(v.course) || Number(v.heading) || 0;
   L.marker([Number(v.lat), Number(v.lon)], {
     icon: L.divIcon({
-      className: "selected-vessel-icon",
+      className: `selected-vessel-icon ${v.dark ? "dark" : "active"}`,
       html:
         `<svg viewBox="0 0 18 26" aria-hidden="true" ` +
         `style="transform:rotate(${bearing}deg)">` +
@@ -1446,12 +1502,15 @@ function hideTrajectory({ restoreView = true } = {}) {
   }
   const selectedMarker = globalMarkers.get(state.selectedMmsi);
   state.selectedMmsi = null;
+  state.selectedPredictionKey = null;
   selectedVesselLayer.clearLayers();
   if (selectedMarker) {
     selectedMarker.setStyle(globalMarkerStyle(selectedMarker._fix || {}));
     selectedMarker.closeTooltip();
   }
   state.selectedVessel = null;
+  els.overviewSelection.classList.add("hidden");
+  els.overviewSelection.innerHTML = "";
   els.trajectoryNearby.innerHTML = "";
   if (state.globalLayerOn) {
     renderLivePanelEmptyState();
@@ -1463,9 +1522,8 @@ function hideTrajectory({ restoreView = true } = {}) {
   globalProjectionLayer.clearLayers();
   fishingActivityLayer.clearLayers();
   els.trajectoryPanel.classList.add("hidden");
-  if (els.trajectoryPanel.parentElement !== els.mapWrap) {
-    els.mapWrap.appendChild(els.trajectoryPanel);
-  }
+  document.getElementById("tab-vessel-button").classList.add("hidden");
+  activateSidebarPanel("tab-overview");
   map.invalidateSize({ pan: false });
   if (state.lastFrameRisk) renderRiskPanel(state.lastFrameRisk, "Current scenario step");
   if (restoreView && returnView && state.globalLayerOn) {
@@ -1666,25 +1724,36 @@ async function loadGfwActivity(mmsi) {
 }
 
 function refreshSelectedVessel(v) {
-  state.selectedVessel = v;
-  const age = Math.max(0, Number(v.age_s) || 0);
+  const age = vesselSilenceAge(v);
+  state.selectedVessel = { ...v, age_s: age };
   const lastFix = new Date((Number(v.last_seen) || Date.now() / 1000) * 1000);
   const risk = v.risk || { low_usd: 0, high_usd: 0, items: [] };
   els.trajectoryName.textContent = v.name || `MMSI ${v.mmsi}`;
   els.trajectoryMeta.innerHTML =
-    `Last fix: ${escapeHtml(lastFix.toISOString().slice(11, 19))} UTC<br>` +
+    `<div class="vessel-status-line">` +
+    `<strong class="${v.dark ? "is-silent" : "is-reporting"}">` +
     `${v.dark
-      ? `No AIS report for: ${escapeHtml(formatSilenceAge(age))}<br>` +
-        `AIS-silent threshold: ${aisSilenceThreshold()} seconds<br>`
-      : ""}` +
-    `MMSI: ${escapeHtml(v.mmsi)}${v.imo ? ` · IMO: ${escapeHtml(v.imo)}` : ""}<br>` +
-    `Track: ${Number(v.course || 0).toFixed(0)}° · ${Number(v.speed_kn || 0).toFixed(1)} kn` +
-    `${v.destination ? `<br>Destination: ${escapeHtml(v.destination)}` : ""}` +
-    `${v.call_sign ? ` · Call sign: ${escapeHtml(v.call_sign)}` : ""}`;
+      ? `AIS silent · ${escapeHtml(formatSilenceAge(age))}`
+      : "AIS reporting"}</strong>` +
+    `<span>Last fix ${escapeHtml(lastFix.toISOString().slice(11, 19))} UTC</span></div>` +
+    `<div class="vessel-motion">${Number(v.speed_kn || 0).toFixed(1)} kn · ` +
+    `${Number(v.course || 0).toFixed(0)}°` +
+    `${v.destination ? ` · ${escapeHtml(v.destination)}` : ""}</div>` +
+    `<div class="vessel-identifiers">MMSI ${escapeHtml(v.mmsi)}` +
+    `${v.imo ? ` · IMO ${escapeHtml(v.imo)}` : ""}` +
+    `${v.call_sign ? ` · ${escapeHtml(v.call_sign)}` : ""}</div>`;
+  els.overviewSelection.classList.remove("hidden");
+  els.overviewSelection.innerHTML =
+    `<span>Selected vessel</span>` +
+    `<div><strong>${escapeHtml(v.name || `MMSI ${v.mmsi}`)}</strong>` +
+    `<b>${Number(v.speed_kn || 0).toFixed(1)} kn</b></div>` +
+    `<small>${v.dark
+      ? `AIS silent · ${escapeHtml(formatSilenceAge(age))}`
+      : "AIS reporting"} · ${Number(v.course || 0).toFixed(0)}° course</small>`;
   els.trajectoryRisk.innerHTML =
     `<div class="trajectory-heading">Response planning</div>` +
     `<div class="trajectory-cost">${(risk.items || []).length
-      ? `${risk.items.length} conditional option${risk.items.length === 1 ? "" : "s"}`
+      ? `${risk.items.length} response option${risk.items.length === 1 ? "" : "s"}`
       : "Monitoring only"}</div>`;
   renderRiskPanel(risk, v.name || `MMSI ${v.mmsi}`);
   if (state.globalLayerOn) {
@@ -1696,20 +1765,53 @@ function refreshSelectedVessel(v) {
   }
 }
 
-function trajectoryBounds(scenarios, start) {
+function vesselSilenceAge(v) {
+  const reportedAge = Math.max(0, Number(v?.age_s) || 0);
+  const lastSeen = Number(v?.last_seen);
+  if (!v?.dark || !Number.isFinite(lastSeen)) return reportedAge;
+  return Math.max(reportedAge, Date.now() / 1000 - lastSeen);
+}
+
+function predictionCacheKey(v) {
+  const bucket = Math.floor(vesselSilenceAge(v) / 300);
+  return `${v.mmsi}:${v.last_seen}:${bucket}`;
+}
+
+function trajectoryBounds(scenarios, start, confidenceRegions = []) {
   const bounds = L.latLngBounds(
     scenarios.flatMap((scenario) => scenario.path).concat([start])
   );
-  for (const scenario of scenarios) {
-    const end = scenario.path[scenario.path.length - 1];
-    const radiusM = Math.max(0, Number(scenario.uncertainty_radius_m) || 0);
-    const latRadius = radiusM / 111320;
-    const lonRadius = latRadius /
-      Math.max(0.1, Math.cos(Number(end[0]) * Math.PI / 180));
-    bounds.extend([Number(end[0]) - latRadius, Number(end[1]) - lonRadius]);
-    bounds.extend([Number(end[0]) + latRadius, Number(end[1]) + lonRadius]);
+  for (const region of confidenceRegions) {
+    for (const point of region.polygon || []) bounds.extend(point);
   }
   return bounds;
+}
+
+function trajectoryCameraOptions(bounds) {
+  const diagonalM = map.distance(
+    bounds.getSouthWest(),
+    bounds.getNorthEast()
+  );
+  const maxZoom =
+    diagonalM < 1000 ? 16 :
+    diagonalM < 5000 ? 15 :
+    diagonalM < 25000 ? 13 :
+    diagonalM < 100000 ? 11 :
+    diagonalM < 500000 ? 9 : 7;
+  const viewport = map.getSize();
+  const paddingPx = Math.max(
+    48,
+    Math.min(
+      96,
+      Math.round(Math.min(viewport.x, viewport.y) * (
+        diagonalM >= 100000 ? 0.16 : 0.11
+      ))
+    )
+  );
+  return {
+    padding: [paddingPx, paddingPx],
+    maxZoom,
+  };
 }
 
 function setTrajectoryModesDisabled(disabled) {
@@ -1735,7 +1837,7 @@ async function pollPredictionEnvironment(v, cacheKey) {
       if (
         state.selectedMmsi !== v.mmsi ||
         !latest?.dark ||
-        `${latest.mmsi}:${latest.last_seen}` !== cacheKey
+        predictionCacheKey(latest) !== cacheKey
       ) {
         return;
       }
@@ -1822,13 +1924,16 @@ async function showTrajectory(
     loadGfwIdentity(v.mmsi);
     loadGfwActivity(v.mmsi);
   }
-  if (els.trajectoryPanel.parentElement !== els.eventlog) {
-    els.eventlog.appendChild(els.trajectoryPanel);
-  }
+  const trajectoryWasHidden = els.trajectoryPanel.classList.contains("hidden");
   els.trajectoryPanel.classList.remove("hidden");
+  document.getElementById("tab-vessel-button").classList.remove("hidden");
+  if (adjustCamera || trajectoryWasHidden) {
+    activateSidebarPanel("trajectory-panel");
+  }
   const modeSwitch = els.trajectoryPanel.querySelector(".trajectory-mode-switch");
   modeSwitch.classList.toggle("hidden", !v.dark);
   if (!v.dark) {
+    state.selectedPredictionKey = null;
     setTrajectoryModesDisabled(false);
     els.trajectoryEnvironment.innerHTML = "";
     els.trajectoryHeading.textContent = "AIS transmitting · live contact";
@@ -1864,13 +1969,22 @@ async function showTrajectory(
     els.trajectoryNote.textContent =
       "Reviewing the vessel's last reported movement and nearby conditions.";
   }
-  const cacheKey = `${v.mmsi}:${v.last_seen}`;
+  const cacheKey = predictionCacheKey(v);
+  state.selectedPredictionKey = cacheKey;
   let prediction = state.predictionCache.get(cacheKey);
   let shouldPollEnvironment = false;
   try {
     if (!prediction) {
       prediction = await getJson(`/api/global/${encodeURIComponent(v.mmsi)}/prediction`);
       if (!predictionEnvironmentPending(prediction)) {
+        for (const existingKey of state.predictionCache.keys()) {
+          if (
+            existingKey.startsWith(`${v.mmsi}:`) &&
+            existingKey !== cacheKey
+          ) {
+            state.predictionCache.delete(existingKey);
+          }
+        }
         state.predictionCache.set(cacheKey, prediction);
       } else {
         shouldPollEnvironment = true;
@@ -1907,9 +2021,21 @@ async function showTrajectory(
   const scenarios = state.trajectoryMode === "single"
     ? allScenarios.slice(0, 1)
     : allScenarios;
+  const elapsedRegions = prediction.elapsed_confidence_regions || [];
+  const forecastRegions = prediction.forecast_confidence_regions ||
+    prediction.confidence_regions || [];
+  const modeledSilenceSeconds =
+    Math.max(0, Number(prediction.modeled_silence_minutes) || 0) * 60;
   els.trajectoryHeading.textContent =
-    `Predicted routes · ${prediction.horizon_minutes}-minute outlook`;
-  els.trajectoryOptions.innerHTML = "";
+    `Possible movement since last fix · ${formatSilenceAge(modeledSilenceSeconds)}`;
+  const confidenceLabel = prediction.confidence?.label || "unknown";
+  els.trajectoryOptions.innerHTML =
+    `<div class="trajectory-confidence">` +
+    `<span><strong>50%</strong> likely region</span>` +
+    `<span><strong>80%</strong> likely region</span>` +
+    `<span><strong>95%</strong> possible region</span>` +
+    `<small>Forward outlook · next ${Number(prediction.horizon_minutes) || 30} minutes · ` +
+    `${escapeHtml(confidenceLabel)} confidence</small></div>`;
   const behaviorLabels = {
     maintain_course: "Course held",
     maneuver: "Course change",
@@ -1930,12 +2056,13 @@ async function showTrajectory(
       `<span class="trajectory-distance">${probability.toFixed(1)}% likely</span>`;
     els.trajectoryOptions.appendChild(row);
   });
-  const bounds = trajectoryBounds(scenarios, start);
+  const bounds = trajectoryBounds(
+    scenarios,
+    start,
+    elapsedRegions.concat(forecastRegions)
+  );
   if (adjustCamera && bounds.isValid()) {
-    const cameraOptions = {
-      padding: [64, 64],
-      maxZoom: 12,
-    };
+    const cameraOptions = trajectoryCameraOptions(bounds);
     await flyMap(
       () => map.flyToBounds(bounds, {
         ...cameraOptions,
@@ -1952,6 +2079,25 @@ async function showTrajectory(
   }
   if (state.trajectoryRenderId !== renderId || state.selectedMmsi !== v.mmsi) return;
   const runners = [];
+  for (const [phase, regions] of [
+    ["forecast", forecastRegions],
+    ["elapsed", elapsedRegions],
+  ]) {
+    [...regions].reverse().forEach((region) => {
+      const level = Number(region.level) || 95;
+      const fillOpacity = level === 50 ? 0.14 : level === 80 ? 0.08 : 0.035;
+      L.polygon(region.polygon || [], {
+        color: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
+        weight: level === 50 ? 1.4 : 1,
+        opacity: phase === "elapsed" ? 0.75 : 0.55,
+        fillColor: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
+        fillOpacity,
+        dashArray: phase === "forecast" ? "4 5" : null,
+        interactive: false,
+        className: `confidence-region confidence-${phase} confidence-${level}`,
+      }).addTo(globalProjectionLayer);
+    });
+  }
   renderOceanCurrents(prediction.ocean_conditions);
   renderEnvironmentalMetrics(prediction);
   renderEnvironmentalVisuals(prediction, start);
@@ -1968,6 +2114,15 @@ async function showTrajectory(
     const color = colors[index % colors.length];
     const path = scenario.path;
     const end = path[path.length - 1];
+    const currentIndex = Math.max(
+      0,
+      Math.min(
+        path.length - 1,
+        Number(scenario.current_path_index ?? prediction.current_path_index) || 0
+      )
+    );
+    const elapsedPath = path.slice(0, currentIndex + 1);
+    const forecastPath = path.slice(currentIndex);
     const phaseOffset = index / Math.max(1, scenarios.length);
     const initialProgress = Math.min(1, phaseOffset / 0.88);
     const initialEased =
@@ -1984,24 +2139,31 @@ async function showTrajectory(
       initialFrom[0] + (initialTo[0] - initialFrom[0]) * initialFraction,
       initialFrom[1] + (initialTo[1] - initialFrom[1]) * initialFraction,
     ];
-    L.polyline(path, {
+    if (elapsedPath.length > 1) L.polyline(elapsedPath, {
+      color: "#ffb020",
+      weight: 1.6,
+      opacity: 0.68,
+      dashArray: "3 5",
+      interactive: false,
+      className: `trajectory-path trajectory-elapsed trajectory-path-${index}`,
+    }).addTo(globalProjectionLayer);
+    if (forecastPath.length > 1) L.polyline(forecastPath, {
       color,
       weight: 2,
       opacity: 0.9,
       dashArray: "6 5",
       interactive: false,
-      className: `trajectory-path trajectory-path-${index}`,
+      className: `trajectory-path trajectory-forecast trajectory-path-${index}`,
     }).addTo(globalProjectionLayer);
-    L.circle(end, {
-      radius: Number(scenario.uncertainty_radius_m) || 100,
-      color,
+    L.circleMarker(path[currentIndex], {
+      radius: 3,
+      color: "#ffcf66",
       weight: 1,
-      opacity: 0.75,
-      fillColor: color,
-      fillOpacity: 0.08,
-      dashArray: "3 4",
+      opacity: 0.9,
+      fillColor: "#ffb020",
+      fillOpacity: 0.9,
       interactive: false,
-      className: "trajectory-radius",
+      className: "trajectory-current-position",
     }).addTo(globalProjectionLayer);
     const routeOriginPoint = map.latLngToLayerPoint(path[0]);
     const routeSpanPx = path.reduce(
@@ -2039,31 +2201,38 @@ async function showTrajectory(
   const current = prediction.ocean_conditions?.center;
   const wave = prediction.ocean_conditions?.wave;
   const wind = prediction.weather_conditions?.center;
-  const silenceMinutes = Math.max(1, Math.round(Number(v.age_s) / 60));
+  const silenceSeconds = Math.max(
+    0,
+    Number(prediction.modeled_silence_minutes) * 60 || vesselSilenceAge(v)
+  );
   const currentText = current
     ? `Nearby ocean flow is ${Number(current.speed_mps).toFixed(2)} m/s ` +
-      `toward ${Number(current.bearing_deg).toFixed(0)}° and is included in these routes. `
+      `toward ${Number(current.bearing_deg).toFixed(0)}° and is applied only to the forward outlook. `
     : prediction.ocean_conditions?.pending
-      ? "Ocean-current data is still loading; these routes currently follow the vessel's reported movement. "
-      : "No ocean-current reading was available for this location. ";
+      ? "Ocean-current data for the forward outlook is still loading. "
+      : "No current ocean-flow reading was available for the forward outlook. ";
   const waveText = wave?.available
-    ? `Copernicus reports ${Number(wave.height_m).toFixed(1)} m waves, including wave drift. `
+    ? `Copernicus reports ${Number(wave.height_m).toFixed(1)} m waves for the forward outlook. `
     : "";
   const windText = wind
     ? `NOAA wind is ${Number(wind.speed_mps).toFixed(1)} m/s toward ` +
-      `${Number(wind.bearing_deg).toFixed(0)}° and contributes to estimated leeway. `
+      `${Number(wind.bearing_deg).toFixed(0)}° and contributes to forward estimated leeway. `
     : prediction.weather_conditions?.pending
       ? "Wind forcing is loading. "
       : "";
   const timingText =
-    `The routes begin at the last reported position and include ` +
-    `${silenceMinutes} minute${silenceMinutes === 1 ? "" : "s"} without a signal. `;
+    `Possible movement covers the full ${formatSilenceAge(silenceSeconds)} since the last fix, ` +
+    `followed by a separate ${Number(prediction.horizon_minutes) || 30}-minute outlook. `;
+  const historicalText = prediction.environment_evidence?.historical_gap?.available
+    ? "Historical environmental observations were applied across the AIS gap. "
+    : "Historical current, wind and wave observations were unavailable, so live conditions were not projected backward across the AIS gap. ";
   const driverLabels = {
     course_over_ground: "recent direction",
     true_heading: "vessel heading",
     speed_over_ground: "recent speed",
     rate_of_turn: "turning rate",
     track_history: "movement history",
+    historical_environment_unavailable: "historical environmental evidence",
   };
   const qualityText = drivers.length
     ? `The estimate is less certain because ${drivers.map((name) => driverLabels[name] || name).join(", ")} ` +
@@ -2074,6 +2243,8 @@ async function showTrajectory(
     waveText +
     windText +
     timingText +
+    historicalText +
+    `${prediction.confidence?.reason || "Confidence reflects the AIS gap and available navigation evidence"}. ` +
     qualityText;
   startTrajectoryAnimation(runners, { preservePhase: inPlaceRefresh });
   setTrajectoryModesDisabled(false);
@@ -2087,12 +2258,18 @@ function applyGlobalFix(v) {
   if (!m) {
     m = L.circleMarker([v.lat, v.lon], {
       renderer: globalRenderer,
-      radius: 8,
+      // Keep the rendered boat compact while giving it a forgiving click
+      // target, especially at regional zoom levels with dense traffic.
+      radius: 12,
       ...globalMarkerStyle(v),
       interactive: true,
       bubblingMouseEvents: false,
     }).addTo(globalLayer);
-    m.on("click", () => showTrajectory(m._fix));
+    m.on("click", () => {
+      m.closeTooltip();
+      const latest = state.globalVessels.get(m._fix.mmsi) || m._fix;
+      showTrajectory(latest);
+    });
     m.bindTooltip("", { sticky: true });
     globalMarkers.set(v.mmsi, m);
   } else {
@@ -2265,19 +2442,6 @@ function refreshNearbyContext() {
   }, 220);
 }
 
-function globalStatusText() {
-  if (state.globalLive) {
-    return `Vessel feed · ${globalContactCounts().total.toLocaleString()} contacts`;
-  }
-  if (!state.globalStatus.configured) {
-    return "Vessel feed unavailable";
-  }
-  if (state.globalStatus.connected) {
-    return "Connected · waiting for positions";
-  }
-  return "Reconnecting to vessel feed";
-}
-
 function renderLiveRail(status) {
   if (!document.getElementById("live-rail-contacts")) {
     els.log.innerHTML =
@@ -2302,48 +2466,56 @@ function renderLiveRail(status) {
     `${Number(status.identity_switches || 0).toLocaleString()} observed changes`;
 }
 
-function setGlobalLayer(on) {
-  state.globalLayerOn = on;
-  document.body.classList.toggle("live-mode", on);
-  els.btnGlobalLayer.classList.toggle("active", on);
-  if (on) {
-    state.localView = { center: map.getCenter(), zoom: map.getZoom() };
-    map.removeLayer(localLayer);
-    map.removeLayer(zonesLayer);
-    globalLayer.addTo(map);
-    const counts = globalContactCounts();
-    els.statsTracks.textContent = counts.active;
-    els.statsDark.textContent = counts.dark;
-    els.statsTotal.textContent = counts.total;
-    els.idCount.textContent = state.globalStatus.identity_switches ?? 0;
-    els.assocBadge.textContent = "LIVE";
-    els.assocBadge.classList.remove("naive");
-    renderLiveRail(state.globalStatus);
-    if (state.selectedVessel) {
-      renderLiveBrief(state.selectedVessel);
-      renderLiveEvidence(state.selectedVessel);
-    } else {
-      renderLivePanelEmptyState();
-    }
-    els.globalBadge.classList.remove("hidden");
-    els.globalBadge.textContent = globalStatusText();
-  } else {
-    hideTrajectory({ restoreView: false });
-    map.removeLayer(globalLayer);
-    localLayer.addTo(map);
-    zonesLayer.addTo(map);
-    setAssocUi(state.assocMode);
-    if (state.localView) {
-      map.setView(state.localView.center, state.localView.zoom, { animate: false });
-      state.localView = null;
-    }
-    els.globalBadge.classList.add("hidden");
+function frameRegionalProvider() {
+  const provider = state.globalStatus?.provider;
+  if (
+    provider !== "digitraffic" ||
+    state.globalProviderFramed === provider ||
+    !state.globalVessels.size
+  ) {
+    return;
   }
+  const bounds = L.latLngBounds(
+    Array.from(state.globalVessels.values(), (vessel) => [
+      Number(vessel.lat),
+      Number(vessel.lon),
+    ])
+  );
+  if (!bounds.isValid()) return;
+  map.fitBounds(bounds.pad(0.08), {
+    animate: false,
+    maxZoom: 7,
+  });
+  state.globalProviderFramed = provider;
+  refreshNearbyContext();
+}
+
+function setGlobalLayer() {
+  state.globalLayerOn = true;
+  document.body.classList.add("live-mode");
+  els.btnGlobalLayer.classList.add("active");
+  map.removeLayer(localLayer);
+  map.removeLayer(zonesLayer);
+  globalLayer.addTo(map);
+  const counts = globalContactCounts();
+  els.statsTracks.textContent = counts.active;
+  els.statsDark.textContent = counts.dark;
+  els.statsTotal.textContent = counts.total;
+  els.idCount.textContent = state.globalStatus.identity_switches ?? 0;
+  els.assocBadge.textContent = "LIVE";
+  els.assocBadge.classList.remove("naive");
+  renderLiveRail(state.globalStatus);
+  if (state.selectedVessel) {
+    renderLiveBrief(state.selectedVessel);
+    renderLiveEvidence(state.selectedVessel);
+  } else {
+    renderLivePanelEmptyState();
+  }
+  frameRegionalProvider();
   if (document.getElementById("tab-eval").classList.contains("active")) {
     loadEval();
   }
 }
-els.btnGlobalLayer.addEventListener("click", () => setGlobalLayer(!state.globalLayerOn));
 
 let globalPollTimer = null;
 async function pollGlobal() {
@@ -2377,7 +2549,28 @@ async function pollGlobal() {
       state.globalVessels.delete(mmsi);
     }
     state.globalRevision = Number(data.revision) || state.globalRevision;
+    if (state.selectedMmsi !== null) {
+      const selected = state.globalVessels.get(state.selectedMmsi) ||
+        state.selectedVessel;
+      if (selected) {
+        const agedSelected = {
+          ...selected,
+          age_s: vesselSilenceAge(selected),
+        };
+        refreshSelectedVessel(agedSelected);
+        if (
+          agedSelected.dark &&
+          predictionCacheKey(agedSelected) !== state.selectedPredictionKey
+        ) {
+          showTrajectory(agedSelected, {
+            adjustCamera: false,
+            refreshEnvironment: true,
+          });
+        }
+      }
+    }
     if (state.globalLayerOn) {
+      frameRegionalProvider();
       const counts = globalContactCounts();
       els.statsTracks.textContent = counts.active;
       els.statsDark.textContent = counts.dark;
@@ -2388,10 +2581,6 @@ async function pollGlobal() {
       if (document.getElementById("tab-eval").classList.contains("active")) {
         renderLiveChecks();
       }
-      els.globalBadge.textContent = state.globalLive
-        ? `Vessel feed · ${counts.total.toLocaleString()} contacts · ` +
-          `${counts.dark.toLocaleString()} silent >${aisSilenceThreshold()}s`
-        : globalStatusText();
     }
   } catch (err) {
     // Global layer is best-effort; local pack streaming must never depend on it.
@@ -2492,7 +2681,7 @@ document.addEventListener("keydown", (ev) => {
   else if (ev.key === "Escape") els.btnReset.click();
 });
 
-setGlobalLayer(true);
+setGlobalLayer();
 connect();
 jtmsReset().then(() => {
   if (state.globalLayerOn) renderLivePanelEmptyState();

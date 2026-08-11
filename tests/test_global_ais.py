@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 from data import global_ais
 
@@ -201,3 +202,111 @@ def test_position_reports_build_bounded_history():
         feed._record(123456789, {"lat": float(index), "lon": float(index)})
 
     assert len(feed.vessels[123456789]["history"]) == global_ais.MAX_HISTORY
+
+
+def test_provider_factory_keeps_aisstream_and_digitraffic_selectable(tmp_path):
+    aisstream = global_ais.create_global_feed(
+        "aisstream",
+        aisstream_api_key="test-key",
+        state_path=tmp_path / "aisstream.json.gz",
+    )
+    digitraffic = global_ais.create_global_feed(
+        "digitraffic",
+        state_path=tmp_path / "digitraffic.json.gz",
+    )
+
+    assert isinstance(aisstream, global_ais.GlobalAisFeed)
+    assert not isinstance(aisstream, global_ais.DigitrafficAisFeed)
+    assert isinstance(digitraffic, global_ais.DigitrafficAisFeed)
+    assert aisstream.status()["provider"] == "aisstream"
+    assert digitraffic.status()["provider"] == "digitraffic"
+
+
+def test_digitraffic_schema_maps_metadata_and_live_positions(monkeypatch):
+    now = 1_700_000_100.0
+    monkeypatch.setattr(global_ais.time, "time", lambda: now)
+    feed = global_ais.DigitrafficAisFeed(poll_seconds=5)
+    metadata = [{
+        "mmsi": 230123456,
+        "name": "BALTIC TEST",
+        "imo": 7654321,
+        "callSign": "OHTEST",
+        "shipType": 70,
+        "destination": "HELSINKI",
+        "draught": 68,
+    }]
+    locations = {
+        "type": "FeatureCollection",
+        "features": [{
+            "mmsi": 230123456,
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [24.962472, 60.1763],
+            },
+            "properties": {
+                "mmsi": 230123456,
+                "sog": 10.7,
+                "cog": 326.6,
+                "navStat": 0,
+                "rot": 0,
+                "heading": 325,
+                "timestampExternal": 1_700_000_000_000,
+            },
+        }],
+    }
+
+    async def fake_get_json(_session, url, _etag):
+        if url == global_ais.DIGITRAFFIC_VESSELS_URL:
+            return metadata, "metadata-etag"
+        return locations, "locations-etag"
+
+    feed._get_json = fake_get_json
+    asyncio.run(feed._refresh_metadata(None))
+    asyncio.run(feed._refresh_locations(None))
+
+    vessel = feed.snapshot()[0]
+    assert vessel["mmsi"] == 230123456
+    assert vessel["name"] == "BALTIC TEST"
+    assert vessel["draught_m"] == 6.8
+    assert vessel["lat"] == 60.1763
+    assert vessel["lon"] == 24.96247
+    assert vessel["course"] == 326.6
+    assert vessel["speed_kn"] == 10.7
+    assert vessel["age_s"] == 100
+    assert vessel["dark"] is False
+    assert feed.status()["coverage"] == "Finnish and Baltic waters"
+    assert feed.status()["dark_after_s"] == 180
+
+
+def test_digitraffic_repeated_snapshot_does_not_refresh_last_seen(monkeypatch):
+    now = [1_700_000_010.0]
+    monkeypatch.setattr(global_ais.time, "time", lambda: now[0])
+    feed = global_ais.DigitrafficAisFeed(poll_seconds=5)
+    payload = {
+        "type": "FeatureCollection",
+        "features": [{
+            "mmsi": 230123456,
+            "geometry": {"type": "Point", "coordinates": [24.9, 60.1]},
+            "properties": {
+                "sog": 8.0,
+                "cog": 90.0,
+                "timestampExternal": 1_700_000_000_000,
+            },
+        }],
+    }
+
+    async def fake_get_json(_session, _url, _etag):
+        return payload, "locations-etag"
+
+    feed._get_json = fake_get_json
+    asyncio.run(feed._refresh_locations(None))
+    first_revision = feed.revision
+    now[0] += 190
+    asyncio.run(feed._refresh_locations(None))
+
+    vessel = feed.snapshot()[0]
+    assert feed.revision == first_revision + 1
+    assert feed.position_reports == 1
+    assert vessel["age_s"] == 200
+    assert vessel["dark"] is True

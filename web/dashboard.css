@@ -1,4 +1,4 @@
-/* Aegis maritime safety and financial-risk dashboard. */
+/* Aegis maritime safety and intelligence dashboard. */
 
 :root {
   --font: "Roboto", "Helvetica Neue", Arial, sans-serif;
@@ -151,22 +151,6 @@ textarea {
   filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
 }
 
-.global-badge {
-  position: absolute;
-  top: 0.6rem; left: 50%;
-  transform: translateX(-50%);
-  background: rgba(255, 176, 32, 0.15);
-  border: 1px solid var(--amber);
-  color: var(--amber);
-  font-weight: 800;
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  padding: 0.35rem 0.8rem;
-  border-radius: 999px;
-  z-index: 500;
-  pointer-events: none;
-}
-
 .global-vessel-icon {
   background: none !important;
   border: 0 !important;
@@ -306,6 +290,30 @@ textarea {
   font-size: 0.68rem;
   margin-top: 0.4rem;
 }
+.trajectory-confidence {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0.45rem 0 0.6rem;
+}
+.trajectory-confidence span {
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 0.58rem;
+  line-height: 1.25;
+  padding: 0.38rem;
+}
+.trajectory-confidence strong {
+  color: var(--cyan);
+  display: block;
+  font-size: 0.68rem;
+}
+.trajectory-confidence small {
+  color: var(--text-dim);
+  font-size: 0.61rem;
+  grid-column: 1 / -1;
+}
 .trajectory-swatch { width: 10px; height: 2px; }
 .trajectory-distance { color: var(--text); font-weight: 700; }
 .trajectory-environment {
@@ -419,6 +427,12 @@ textarea {
 .trajectory-path {
   animation: trajectory-flow 1.1s linear infinite;
 }
+.trajectory-elapsed {
+  animation-duration: 1.8s;
+}
+.confidence-region {
+  pointer-events: none;
+}
 .ocean-current-vector {
   stroke-dasharray: 3 3;
   animation: trajectory-flow 1.8s linear infinite;
@@ -448,6 +462,7 @@ textarea {
   will-change: transform, opacity;
 }
 .selected-vessel-icon {
+  position: relative;
   display: grid !important;
   place-items: center;
   width: 18px !important;
@@ -455,6 +470,18 @@ textarea {
   background: none !important;
   border: 0 !important;
   pointer-events: none;
+}
+.selected-vessel-icon.active::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(111, 201, 232, .8);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(.45);
+  animation: live-vessel-pulse 1.8s ease-out infinite;
 }
 .selected-vessel-icon svg {
   display: block;
@@ -503,6 +530,10 @@ textarea {
 @keyframes trajectory-radius-pulse {
   0%, 100% { stroke-opacity: 0.35; fill-opacity: 0.04; }
   50% { stroke-opacity: 1; fill-opacity: 0.16; }
+}
+@keyframes live-vessel-pulse {
+  0% { opacity: .9; transform: translate(-50%, -50%) scale(.45); }
+  75%, 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
 }
 
 #stats-overlay {
@@ -620,6 +651,54 @@ textarea {
   font-size: 0.68rem;
   line-height: 1.4;
   margin-top: 0.35rem;
+}
+.risk-priority {
+  color: var(--cyan);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.risk-card.critical .risk-priority { color: var(--critical); }
+.risk-reference {
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.66rem;
+}
+.risk-reference summary {
+  color: var(--text-dim);
+  cursor: pointer;
+  font-weight: 600;
+}
+.risk-reference[open] summary {
+  color: var(--cyan);
+  margin-bottom: 0.65rem;
+}
+.risk-reference p {
+  margin: 0.55rem 0;
+  line-height: 1.45;
+}
+.risk-reference-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.65rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border-soft);
+}
+.risk-reference-row strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.risk-reference-row span {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.risk-reference-row small {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  line-height: 1.4;
 }
 .brief-card .concl-id, .jtms-node .node-id, .eval-pack .pack-id {
   font-family: var(--font);
@@ -771,7 +850,7 @@ body.live-mode #btn-retract {
   transform: rotate(90deg);
 }
 .leaflet-control-attribution {
-  margin: 0 8px 7px 0 !important;
+  margin: 0 0 7px 8px !important;
   padding: 3px 7px !important;
   border: 1px solid rgba(124, 139, 161, 0.22);
   border-radius: 6px;
@@ -867,23 +946,6 @@ body.live-mode .assoc-badge {
 .log-zone,
 .log-log {
   color: var(--text-dim);
-}
-
-.global-badge {
-  top: 0.85rem;
-  max-width: min(72%, 760px);
-  padding: 0.34rem 0.7rem;
-  border: 0;
-  border-left: 2px solid var(--cyan);
-  border-radius: 0;
-  background: rgba(7, 10, 13, 0.78);
-  color: var(--text);
-  font-size: 0.66rem;
-  font-weight: 500;
-  line-height: 1.3;
-  letter-spacing: 0.02em;
-  text-align: center;
-  backdrop-filter: blur(8px);
 }
 
 #sidepanel {
@@ -1092,6 +1154,11 @@ body.live-mode .assoc-badge {
   color: var(--cyan);
 }
 
+#btn-global-layer:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
 .control-with-glyph {
   display: inline-flex;
   align-items: center;
@@ -1177,6 +1244,14 @@ body.live-mode .assoc-badge {
 .aegis-zoom-button:hover {
   border-color: var(--border-soft);
   background: var(--cyan-soft);
+}
+
+.aegis-zoom-button:disabled,
+.aegis-zoom-button:disabled:hover {
+  background: transparent;
+  color: var(--text-dim);
+  cursor: default;
+  opacity: .32;
 }
 
 .aegis-zoom-button span,
@@ -1780,4 +1855,442 @@ body.live-mode .assoc-badge {
   .fishing-intelligence {
     width: 220px;
   }
+}
+
+/* ---------------------------------------------------- unified information */
+
+#map-wrap {
+  flex: 1 1 auto;
+}
+
+#sidepanel {
+  flex: 0 0 clamp(360px, 28vw, 430px);
+  min-width: 360px;
+  max-width: 430px;
+}
+
+.tabbar {
+  gap: 1rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#tab-overview {
+  padding: 1.25rem 1.15rem 1.75rem;
+}
+
+#eventlog {
+  position: static;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+
+#eventlog .rail-header {
+  margin-bottom: 1rem;
+}
+
+#eventlog .rail-title {
+  max-width: none;
+}
+
+#eventlog #log-entries {
+  overflow: visible;
+}
+
+.trajectory-panel,
+#eventlog .trajectory-panel {
+  position: static;
+  inset: auto;
+  width: auto;
+  max-height: none;
+  padding: 1.15rem 1.15rem 2rem;
+  overflow-y: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.trajectory-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.8rem;
+}
+
+.trajectory-eyebrow {
+  margin-bottom: 0.22rem;
+  color: var(--cyan);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trajectory-name {
+  padding: 0;
+  color: var(--text);
+  font-size: 1.12rem;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.trajectory-close {
+  float: none;
+  flex: 0 0 auto;
+  padding: 0.15rem 0;
+  color: var(--text-dim);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.trajectory-close:hover {
+  color: var(--text);
+}
+
+.trajectory-meta {
+  margin: 0 0 1rem;
+  padding: 0.72rem 0.8rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: rgba(111, 201, 232, 0.035);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.vessel-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.38rem;
+}
+
+.vessel-status-line strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.vessel-status-line .is-silent {
+  color: var(--amber);
+}
+
+.vessel-status-line .is-reporting {
+  color: var(--cyan);
+}
+
+.vessel-status-line span,
+.vessel-identifiers {
+  color: var(--text-dim);
+}
+
+.vessel-motion {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.vessel-identifiers {
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
+}
+
+.trajectory-mode-switch {
+  width: max-content;
+  margin: 0 0 1rem;
+  padding: 2px;
+  gap: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+}
+
+.trajectory-mode {
+  min-height: 28px;
+  padding: 0.3rem 0.65rem;
+  border: 0;
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+
+.trajectory-mode.active {
+  border: 0;
+  background: var(--cyan-soft);
+}
+
+.trajectory-heading {
+  padding-top: 0;
+  border-top: 0;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.trajectory-confidence {
+  gap: 0.45rem;
+  margin: 0.65rem 0 0.85rem;
+}
+
+.trajectory-confidence span {
+  min-height: 58px;
+  padding: 0.55rem 0.6rem;
+  border-radius: 5px;
+  font-size: 0.69rem;
+  line-height: 1.35;
+}
+
+.trajectory-confidence strong {
+  margin-bottom: 0.1rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.trajectory-confidence small {
+  font-size: 0.71rem;
+  line-height: 1.45;
+}
+
+.trajectory-option {
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.trajectory-distance {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.trajectory-environment {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top-color: var(--border-soft);
+}
+
+.environment-row {
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  padding: 0.52rem 0;
+  font-size: 0.74rem;
+}
+
+.environment-row strong {
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.environment-row b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.trajectory-disclosure {
+  border-top: 1px solid var(--border-soft);
+}
+
+.trajectory-disclosure:last-child {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.trajectory-disclosure summary {
+  position: relative;
+  padding: 0.8rem 1rem 0.8rem 0;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.trajectory-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.trajectory-disclosure summary::after {
+  content: "+";
+  position: absolute;
+  right: 0;
+  color: var(--cyan);
+  font-size: 0.9rem;
+}
+
+.trajectory-disclosure[open] summary::after {
+  content: "−";
+}
+
+.trajectory-disclosure .trajectory-note,
+.trajectory-disclosure .trajectory-context,
+.trajectory-disclosure .trajectory-nearby,
+.trajectory-disclosure .trajectory-activity {
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.trajectory-disclosure .trajectory-note {
+  margin: 0 0 0.9rem;
+}
+
+@media (max-width: 900px) {
+  #sidepanel {
+    flex-basis: 340px;
+    min-width: 340px;
+  }
+}
+
+/* ---------------------------------------------------------- minimal tabs */
+
+.tabbar {
+  overflow: visible;
+}
+
+.tab-more {
+  position: relative;
+  margin-left: auto;
+}
+
+.tab-more-toggle {
+  min-height: 100%;
+  padding: 1rem 0 0.75rem;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.035em;
+  cursor: pointer;
+}
+
+.tab-more-toggle:hover,
+.tab-more-toggle.active {
+  color: var(--text);
+}
+
+.tab-more-toggle.active {
+  border-bottom-color: var(--cyan);
+}
+
+.tab-more-toggle span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 0 2px 4px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.tab-more-toggle[aria-expanded="true"] span {
+  margin-bottom: -1px;
+  transform: rotate(225deg);
+}
+
+.tab-more-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: -0.35rem;
+  z-index: 800;
+  width: 152px;
+  padding: 0.35rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: rgba(8, 12, 16, 0.98);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
+}
+
+.tab-menu-option {
+  display: block;
+  width: 100%;
+  padding: 0.58rem 0.65rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.74rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tab-menu-option:hover,
+.tab-menu-option.active {
+  background: var(--cyan-soft);
+  color: var(--text);
+}
+
+.overview-selection {
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: rgba(111, 201, 232, 0.035);
+}
+
+.overview-selection > span {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--cyan);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.overview-selection > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.overview-selection strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-selection b {
+  flex: 0 0 auto;
+  color: var(--cyan);
+  font-size: 0.86rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-selection small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-dim);
+  font-size: 0.7rem;
 }

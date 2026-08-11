@@ -56,13 +56,24 @@ COPERNICUS_MARINE_PASSWORD=
 AEGIS_PACK=s02_synthetic_demo
 AEGIS_FRAMES=-1
 AEGIS_LLM=mockllm
+AEGIS_AIS_PROVIDER=aisstream
+AEGIS_DIGITRAFFIC_POLL_SECONDS=5
+AEGIS_DIGITRAFFIC_DARK_AFTER_SECONDS=180
 AEGIS_AIS_STATE_PATH=.aegis/ais_state.json.gz
 PORT=8765
 ```
 
-Without an AISStream key, the live view remains empty and clearly reports that
-configuration is required; Aegis never substitutes synthetic global contacts.
-Without an LLM provider key, it uses deterministic offline brief text.
+Set `AEGIS_AIS_PROVIDER=digitraffic` for a keyless live feed from Fintraffic
+covering Finnish and Baltic waters. It polls the compressed REST snapshot every
+five seconds and preserves each report's source timestamp so repeated polls do
+not hide AIS silence. Digitraffic uses a three-minute dark threshold to account
+for REST publication latency; AISStream retains its 45-second threshold.
+
+AISStream remains the primary global provider. To switch back, set
+`AEGIS_AIS_PROVIDER=aisstream` and provide `AISSTREAM_API_KEY`. Without an
+AISStream key, that provider's live view remains empty and clearly reports that
+configuration is required. Aegis never substitutes synthetic contacts. Without
+an LLM provider key, it uses deterministic offline brief text.
 
 With `AISSTREAM_API_KEY` set, Aegis subscribes to position plus static/voyage
 reports across ten high-traffic maritime regions. It retains bounded track
