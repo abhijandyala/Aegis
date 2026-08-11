@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Aegis · Maritime Safety & Financial Risk</title>
+<title>Aegis · Maritime Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="dashboard.css?v=20260802-context4" />
+<link rel="stylesheet" href="dashboard.css?v=20260811-minimal1" />
 <link rel="stylesheet" href="onboarding.css?v=20260802-intro8" />
 </head>
 <body class="intro-active">
@@ -65,7 +65,7 @@
       <article>
         <span>03</span>
         <h3>Add independent evidence</h3>
-        <p>Review Global Fishing Watch identity, activity, SAR, protected waters, ports, and sourced response costs.</p>
+        <p>Review Global Fishing Watch identity, activity, SAR, protected waters, ports, and operational response options.</p>
       </article>
     </div>
     <p class="intro-info-note">Aegis supports investigation. It does not declare activity illegal or replace navigation and enforcement authorities.</p>
@@ -78,22 +78,8 @@
 
   <div class="main-row">
 
-    <aside id="eventlog">
-      <div class="rail-header">
-        <div>
-          <div class="brand">AEGIS</div>
-          <h1 class="rail-title">Maritime risk operations</h1>
-        </div>
-        <span id="assoc-badge" class="assoc-badge">GLOBAL</span>
-      </div>
-      <div id="log-entries" aria-live="polite"></div>
-    </aside>
-
     <div id="map-wrap">
       <div id="map"></div>
-      <div id="global-badge" class="global-badge hidden">
-        Vessel feed &middot; connecting
-      </div>
       <section id="fishing-intelligence" class="fishing-intelligence" aria-label="Fishing intelligence layers">
         <button id="fishing-intelligence-toggle" class="fishing-intelligence-toggle" type="button" aria-expanded="false">
           <span class="intel-pulse" aria-hidden="true"></span>
@@ -123,26 +109,6 @@
         </form>
         <div id="world-search-results" class="world-search-results hidden" aria-live="polite"></div>
       </section>
-      <section id="trajectory-panel" class="trajectory-panel hidden" aria-live="polite">
-        <button id="trajectory-close" class="trajectory-close" aria-label="Close trajectory details">Close</button>
-        <div id="trajectory-name" class="trajectory-name">Contact</div>
-        <div id="trajectory-risk" class="trajectory-context"></div>
-        <div id="trajectory-environment" class="trajectory-environment"></div>
-        <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
-          <button class="trajectory-mode active" data-trajectory-mode="all">All likely routes</button>
-          <button class="trajectory-mode" data-trajectory-mode="single">Top route</button>
-        </div>
-        <div id="trajectory-heading" class="trajectory-heading">Predicted route likelihood</div>
-        <div id="trajectory-options"></div>
-        <p id="trajectory-note" class="trajectory-note">
-          Route estimates appear only after a vessel stops reporting its position.
-        </p>
-        <div id="trajectory-meta" class="trajectory-meta"></div>
-        <div id="trajectory-context" class="trajectory-context"></div>
-        <div id="trajectory-nearby" class="trajectory-nearby"></div>
-        <div id="trajectory-gfw" class="trajectory-context"></div>
-        <div id="trajectory-activity" class="trajectory-activity"></div>
-      </section>
       <div id="stats-overlay">
         <div class="stat"><span id="id-switch-count">0</span><label>identity changes</label></div>
         <div class="stat"><span id="stats-tracks">0</span><label>transmitting</label></div>
@@ -153,14 +119,70 @@
 
     <aside id="sidepanel">
       <div class="tabbar">
-        <button class="tab-btn active" data-tab="risk">Risk</button>
-        <button class="tab-btn" data-tab="brief">Brief</button>
-        <button class="tab-btn" data-tab="jtms">Evidence</button>
-        <button class="tab-btn" data-tab="eval">Checks</button>
+        <button class="tab-btn active" data-tab="overview">Overview</button>
+        <button id="tab-vessel-button" class="tab-btn hidden" data-tab="vessel" data-panel="trajectory-panel">Vessel</button>
+        <div class="tab-more">
+          <button id="tab-more-toggle" class="tab-more-toggle" type="button" aria-expanded="false" aria-controls="tab-more-menu">
+            More
+            <span aria-hidden="true"></span>
+          </button>
+          <div id="tab-more-menu" class="tab-more-menu hidden">
+            <button class="tab-menu-option" type="button" data-tab="risk">Response</button>
+            <button class="tab-menu-option" type="button" data-tab="brief">Brief</button>
+            <button class="tab-menu-option" type="button" data-tab="jtms">Evidence</button>
+            <button class="tab-menu-option" type="button" data-tab="eval">Checks</button>
+          </div>
+        </div>
       </div>
 
-      <div id="tab-risk" class="tab-pane active">
-        <p class="hint">Conditional response options calculated from official Coast Guard resource rates. Options are not incurred costs and are not added together.</p>
+      <div id="tab-overview" class="tab-pane active">
+        <div id="overview-selection" class="overview-selection hidden"></div>
+        <section id="eventlog">
+          <div class="rail-header">
+            <div>
+              <div class="brand">AEGIS</div>
+              <h1 class="rail-title">Maritime intelligence overview</h1>
+            </div>
+            <span id="assoc-badge" class="assoc-badge">GLOBAL</span>
+          </div>
+          <div id="log-entries" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <section id="trajectory-panel" class="tab-pane trajectory-panel hidden" aria-live="polite">
+        <header class="trajectory-header">
+          <div>
+            <div class="trajectory-eyebrow">Selected vessel</div>
+            <div id="trajectory-name" class="trajectory-name">Contact</div>
+          </div>
+          <button id="trajectory-close" class="trajectory-close" aria-label="Close vessel details">Close</button>
+        </header>
+        <div id="trajectory-meta" class="trajectory-meta"></div>
+        <div id="trajectory-risk" class="hidden"></div>
+        <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
+          <button class="trajectory-mode active" data-trajectory-mode="all">All likely routes</button>
+          <button class="trajectory-mode" data-trajectory-mode="single">Top route</button>
+        </div>
+        <div id="trajectory-heading" class="trajectory-heading">Predicted route likelihood</div>
+        <div id="trajectory-options"></div>
+        <div id="trajectory-environment" class="trajectory-environment"></div>
+        <details class="trajectory-disclosure">
+          <summary>Prediction details</summary>
+          <p id="trajectory-note" class="trajectory-note">
+            Route estimates appear only after a vessel stops reporting its position.
+          </p>
+        </details>
+        <details class="trajectory-disclosure">
+          <summary>Location and vessel context</summary>
+          <div id="trajectory-context" class="trajectory-context"></div>
+          <div id="trajectory-nearby" class="trajectory-nearby"></div>
+          <div id="trajectory-gfw" class="trajectory-context"></div>
+          <div id="trajectory-activity" class="trajectory-activity"></div>
+        </details>
+      </section>
+
+      <div id="tab-risk" class="tab-pane">
+        <p class="hint">Operational response options based on observed safety signals. Cost references are secondary and optional.</p>
         <div id="risk-summary"></div>
         <div id="risk-list"></div>
       </div>
@@ -202,7 +224,7 @@
 
     <button id="btn-assoc" class="tbtn" title="Compare standard and simplified tracking [M]">STANDARD</button>
     <button id="btn-retract" class="tbtn" title="Temporarily remove the secondary identity report [X]">Remove identity report</button>
-    <button id="btn-global-layer" class="tbtn control-with-glyph" title="Toggle live vessel positions">
+    <button id="btn-global-layer" class="tbtn control-with-glyph active" title="Live AIS is always enabled" aria-pressed="true" disabled>
       <span class="control-glyph control-glyph-live" aria-hidden="true"></span>
       <span>Live AIS</span>
     </button>
@@ -218,6 +240,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="onboarding.js?v=20260802-intro7"></script>
-<script src="dashboard.js?v=20260802-context2"></script>
+<script src="dashboard.js?v=20260811-minimal1"></script>
 </body>
 </html>
