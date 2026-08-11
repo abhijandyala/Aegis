@@ -515,10 +515,64 @@ def _cluster(samples: list[dict[str, Any]], count: int, origin: tuple[float, flo
     return scenarios
 
 
+def _simulation_ensemble(
+    samples: list[dict[str, Any]],
+    timeline: list[float],
+    current_path_index: int,
+    max_points: int = 72,
+) -> dict[str, Any]:
+    """Return all samples in a compact, canvas-friendly representation."""
+    path_length = len(samples[0]["path"])
+    if path_length <= max_points:
+        indices = list(range(path_length))
+    else:
+        indices = sorted({
+            0,
+            current_path_index,
+            path_length - 1,
+            *[
+                round(index * (path_length - 1) / (max_points - 1))
+                for index in range(max_points)
+            ],
+        })
+    compact_paths = []
+    min_lat = 90.0
+    min_lon = 180.0
+    max_lat = -90.0
+    max_lon = -180.0
+    for sample in samples:
+        coordinates: list[float] = []
+        for index in indices:
+            point = sample["path"][index]
+            point_lat = round(float(point[0]), 5)
+            point_lon = round(float(point[1]), 5)
+            coordinates.extend((point_lat, point_lon))
+            min_lat = min(min_lat, point_lat)
+            min_lon = min(min_lon, point_lon)
+            max_lat = max(max_lat, point_lat)
+            max_lon = max(max_lon, point_lon)
+        compact_paths.append({
+            "behavior": sample["behavior"],
+            "path": coordinates,
+        })
+    return {
+        "count": len(compact_paths),
+        "source": "same deterministic Monte Carlo model as the map prediction",
+        "temporally_downsampled": len(indices) < path_length,
+        "original_points_per_path": path_length,
+        "display_points_per_path": len(indices),
+        "current_path_index": indices.index(current_path_index),
+        "timeline_minutes": [round(float(timeline[index]), 2) for index in indices],
+        "bounds": [[min_lat, min_lon], [max_lat, max_lon]],
+        "paths": compact_paths,
+    }
+
+
 def predict_dark_vessel(
     vessel: dict[str, Any],
     ocean_conditions: dict[str, Any] | None = None,
     weather_conditions: dict[str, Any] | None = None,
+    include_samples: bool = False,
 ) -> dict[str, Any]:
     """Return deterministic full-gap Monte Carlo branches from the last AIS fix."""
     if not vessel.get("dark"):
@@ -894,17 +948,18 @@ def predict_dark_vessel(
     for step in time_steps:
         label = f"{float(step['minutes']):g}"
         step_counts[label] = step_counts.get(label, 0) + 1
+    path_timeline = [
+        0.0,
+        *[round(float(step["end_minute"]), 2) for step in time_steps],
+    ]
     path_minutes = modeled_silence_minutes + HORIZON_MINUTES
-    return {
+    result = {
         "model": "monte_carlo_navigation_v4",
         "samples": SAMPLE_COUNT,
         "horizon_minutes": HORIZON_MINUTES,
         "step_minutes": STEP_MINUTES,
         "adaptive_step_counts": step_counts,
-        "path_timeline_minutes": [
-            0.0,
-            *[round(float(step["end_minute"]), 2) for step in time_steps],
-        ],
+        "path_timeline_minutes": path_timeline,
         "modeled_silence_minutes": round(modeled_silence_minutes, 1),
         "unmodeled_silence_minutes": round(unmodeled_silence_minutes, 1),
         "path_minutes_from_last_fix": round(path_minutes, 1),
@@ -994,3 +1049,10 @@ def predict_dark_vessel(
             "source": "NOAA Global Forecast System",
         },
     }
+    if include_samples:
+        result["simulation_ensemble"] = _simulation_ensemble(
+            samples,
+            path_timeline,
+            current_path_index,
+        )
+    return result

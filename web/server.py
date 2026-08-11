@@ -522,12 +522,15 @@ def build_app(cache: dict) -> web.Application:
                 app["ocean_tasks"].add(task)
                 task.add_done_callback(app["ocean_tasks"].discard)
 
+        include_samples = request.query.get("include_samples") == "1"
         prediction = await loop.run_in_executor(
             None,
-            predict_dark_vessel,
-            vessel,
-            ocean,
-            weather,
+            lambda: predict_dark_vessel(
+                vessel,
+                ocean,
+                weather,
+                include_samples=include_samples,
+            ),
         )
         return web.json_response(prediction)
 

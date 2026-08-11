@@ -32,7 +32,9 @@ const els = {
   btnAssoc: document.getElementById("btn-assoc"),
   assocBadge: document.getElementById("assoc-badge"),
   btnRetract: document.getElementById("btn-retract"),
-  btnGlobalLayer: document.getElementById("btn-global-layer"),
+  vesselVisibilityBtns: Array.from(
+    document.querySelectorAll("[data-vessel-visibility]")
+  ),
   btnBathymetry: document.getElementById("btn-bathymetry"),
   fishingIntelligence: document.getElementById("fishing-intelligence"),
   fishingIntelligenceToggle: document.getElementById("fishing-intelligence-toggle"),
@@ -67,6 +69,22 @@ const els = {
   overviewSelection: document.getElementById("overview-selection"),
   tabMoreToggle: document.getElementById("tab-more-toggle"),
   tabMoreMenu: document.getElementById("tab-more-menu"),
+  simulationViewer: document.getElementById("simulation-viewer"),
+  simulationViewerOpen: document.getElementById("simulation-viewer-open"),
+  simulationViewerClose: document.getElementById("simulation-viewer-close"),
+  simulationViewerMap: document.getElementById("simulation-viewer-map"),
+  simulationViewerCanvas: document.getElementById("simulation-viewer-canvas"),
+  simulationViewerLoading: document.getElementById("simulation-viewer-loading"),
+  simulationViewerTooltip: document.getElementById("simulation-viewer-tooltip"),
+  simulationViewerTitle: document.getElementById("simulation-viewer-title"),
+  simulationViewerContext: document.getElementById("simulation-viewer-context"),
+  simulationViewerPhase: document.getElementById("simulation-viewer-phase"),
+  simulationViewerTime: document.getElementById("simulation-viewer-time"),
+  simulationViewerTimeline: document.getElementById("simulation-viewer-timeline"),
+  simulationViewerPlay: document.getElementById("simulation-viewer-play"),
+  simulationViewerRestart: document.getElementById("simulation-viewer-restart"),
+  simulationViewerCount: document.getElementById("simulation-viewer-count"),
+  simulationViewerLegend: document.getElementById("simulation-viewer-legend"),
 };
 
 const state = {
@@ -81,6 +99,7 @@ const state = {
   assocMode: "global",
   packId: null,
   globalLayerOn: false,
+  vesselVisibility: "both",
   globalLive: false, // true once the selected real AIS provider has a fix
   globalVessels: new Map(),
   globalRevision: 0,
@@ -107,6 +126,20 @@ const state = {
   preSelectionView: null,
   lastFrameRisk: null,
   bathymetryOn: true,
+  simulationCache: new Map(),
+  simulationData: null,
+  simulationFrame: null,
+  simulationLastFrameAt: null,
+  simulationLastDrawAt: null,
+  simulationProgress: 0,
+  simulationPlaying: true,
+  simulationProjection: null,
+  simulationBackdrop: null,
+  simulationDensityCanvas: null,
+  simulationMap: null,
+  simulationPositions: [],
+  simulationRequestId: 0,
+  simulationViewerKey: null,
 };
 const SCENARIO_NAMES = {
   s01_dark_in_sanctuary: "Dark-vessel response",
@@ -1202,6 +1235,43 @@ function globalMarkerStyle(v, stale = false) {
   };
 }
 
+function vesselMatchesVisibility(v) {
+  if (state.vesselVisibility === "silent") return Boolean(v?.dark);
+  if (state.vesselVisibility === "live") return !v?.dark;
+  return true;
+}
+
+function syncGlobalMarkerVisibility(marker, vessel) {
+  const shouldShow = vesselMatchesVisibility(vessel);
+  const isShown = globalLayer.hasLayer(marker);
+  if (shouldShow && !isShown) globalLayer.addLayer(marker);
+  else if (!shouldShow && isShown) globalLayer.removeLayer(marker);
+}
+
+function setVesselVisibility(mode) {
+  if (!["silent", "live", "both"].includes(mode)) return;
+  state.vesselVisibility = mode;
+  try {
+    localStorage.setItem("aegis-vessel-visibility", mode);
+  } catch (_error) {
+    // Filtering still works if browser storage is unavailable.
+  }
+  for (const button of els.vesselVisibilityBtns) {
+    const active = button.dataset.vesselVisibility === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  for (const marker of globalMarkers.values()) {
+    syncGlobalMarkerVisibility(marker, marker._fix || {});
+  }
+  if (
+    state.selectedVessel
+    && !vesselMatchesVisibility(state.selectedVessel)
+  ) {
+    hideTrajectory();
+  }
+}
+
 function renderSelectedVesselOverlay(v) {
   selectedVesselLayer.clearLayers();
   if (!v) return;
@@ -1236,8 +1306,8 @@ function renderOceanCurrents(ocean) {
     ];
     L.polyline([[lat, lon], end], {
       color: "#38bdf8",
-      weight: 1.5,
-      opacity: 0.65,
+      weight: 1,
+      opacity: 0.42,
       interactive: false,
       className: "ocean-current-vector",
     }).addTo(globalProjectionLayer);
@@ -1246,7 +1316,7 @@ function renderOceanCurrents(ocean) {
       color: "#7dd3fc",
       weight: 1,
       fillColor: "#7dd3fc",
-      fillOpacity: 0.8,
+      fillOpacity: 0.5,
       interactive: false,
     }).addTo(globalProjectionLayer);
     L.marker([lat, lon], {
@@ -1475,7 +1545,9 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
         ]);
         const element = runner.marker.getElement();
         if (element) {
-          element.style.opacity = String(opacity);
+          element.style.opacity = String(
+            opacity * (runner.opacityScale ?? 1)
+          );
           const boat = element.querySelector("svg");
           if (boat) {
             boat.style.transform =
@@ -1490,9 +1562,521 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
   state.trajectoryAnimationFrame = requestAnimationFrame(begin);
 }
 
+const simulationBehaviorColors = {
+  maintain_course: "#9bb8c3",
+  maneuver: "#7899a5",
+  slow_maneuver: "#c0c8cc",
+  course_reversal: "#c3a66e",
+  drift: "#9b92aa",
+};
+const simulationBehaviorLabels = {
+  maintain_course: "Course held",
+  maneuver: "Course change",
+  slow_maneuver: "Slow turn",
+  course_reversal: "Turnaround",
+  drift: "Drift / stopped",
+};
+
+function stopSimulationAnimation() {
+  if (state.simulationFrame !== null) {
+    cancelAnimationFrame(state.simulationFrame);
+    state.simulationFrame = null;
+  }
+  state.simulationLastFrameAt = null;
+  state.simulationLastDrawAt = null;
+}
+
+function simulationProjector(bounds, width, height) {
+  const south = Number(bounds?.[0]?.[0]) || 0;
+  const west = Number(bounds?.[0]?.[1]) || 0;
+  const north = Number(bounds?.[1]?.[0]) || south;
+  const east = Number(bounds?.[1]?.[1]) || west;
+  const latSpan = Math.max(0.0001, north - south);
+  const longitudeScale = Math.max(
+    0.1,
+    Math.cos(((south + north) / 2) * Math.PI / 180)
+  );
+  const lonSpan = Math.max(0.0001, (east - west) * longitudeScale);
+  const padding = 24;
+  const scale = Math.min(
+    (width - padding * 2) / lonSpan,
+    (height - padding * 2) / latSpan
+  );
+  const drawnWidth = lonSpan * scale;
+  const drawnHeight = latSpan * scale;
+  const offsetX = (width - drawnWidth) / 2;
+  const offsetY = (height - drawnHeight) / 2;
+  return (lat, lon) => [
+    offsetX + (lon - west) * longitudeScale * scale,
+    offsetY + (north - lat) * scale,
+  ];
+}
+
+function prepareSimulationMap(bounds) {
+  if (state.simulationMap === null) {
+    state.simulationMap = L.map(els.simulationViewerMap, {
+      zoomControl: false,
+      attributionControl: false,
+      dragging: false,
+      scrollWheelZoom: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+      tap: false,
+      zoomSnap: 0,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
+    });
+    L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      {
+        subdomains: "abcd",
+        minZoom: 2,
+        maxZoom: 19,
+        noWrap: true,
+        bounds: [[-85, -180], [85, 180]],
+      }
+    ).addTo(state.simulationMap);
+    L.control.scale({
+      imperial: false,
+      maxWidth: 82,
+      position: "bottomleft",
+    }).addTo(state.simulationMap);
+  }
+  state.simulationMap.invalidateSize({ pan: false });
+  const fitBounds = L.latLngBounds(bounds);
+  if (fitBounds.isValid()) {
+    state.simulationMap.fitBounds(fitBounds, {
+      animate: false,
+      padding: [24, 24],
+      maxZoom: 14,
+    });
+  }
+}
+
+function drawSimulationRegion(ctx, region, project, color, alpha) {
+  const polygon = region?.polygon || [];
+  if (polygon.length < 3) return;
+  ctx.beginPath();
+  polygon.forEach((point, index) => {
+    const [x, y] = project(Number(point[0]), Number(point[1]));
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.fill();
+  ctx.globalAlpha = Math.min(0.18, alpha * 1.8);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function buildSimulationBackdrop(width, height) {
+  const prediction = state.simulationData;
+  const ensemble = prediction?.simulation_ensemble;
+  if (!ensemble) return;
+  const backdrop = document.createElement("canvas");
+  backdrop.width = width;
+  backdrop.height = height;
+  const ctx = backdrop.getContext("2d");
+  const project = state.simulationMap
+    ? (lat, lon) => {
+      const point = state.simulationMap.latLngToContainerPoint([lat, lon]);
+      return [point.x, point.y];
+    }
+    : simulationProjector(ensemble.bounds, width, height);
+  state.simulationProjection = project;
+
+  ctx.clearRect(0, 0, width, height);
+
+  [...(prediction.forecast_confidence_regions || [])]
+    .reverse()
+    .forEach((region) => {
+      const alpha = Number(region.level) === 50 ? 0.055 :
+        Number(region.level) === 80 ? 0.032 : 0.018;
+      drawSimulationRegion(ctx, region, project, "#6fc9e8", alpha);
+    });
+  [...(prediction.elapsed_confidence_regions || [])]
+    .reverse()
+    .forEach((region) => {
+      const alpha = Number(region.level) === 50 ? 0.04 :
+        Number(region.level) === 80 ? 0.024 : 0.014;
+      drawSimulationRegion(ctx, region, project, "#dca956", alpha);
+    });
+
+  ctx.lineWidth = 0.55;
+  for (const sample of ensemble.paths) {
+    const flat = sample.path;
+    ctx.beginPath();
+    for (let index = 0; index < flat.length; index += 2) {
+      const [x, y] = project(Number(flat[index]), Number(flat[index + 1]));
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.globalAlpha = 0.018;
+    ctx.strokeStyle =
+      simulationBehaviorColors[sample.behavior] || "#6fc9e8";
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const origin = ensemble.paths[0]?.path;
+  if (origin?.length >= 2) {
+    const [x, y] = project(Number(origin[0]), Number(origin[1]));
+    ctx.strokeStyle = "#ffffff";
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x - 5, y);
+    ctx.lineTo(x + 5, y);
+    ctx.moveTo(x, y - 5);
+    ctx.lineTo(x, y + 5);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  state.simulationBackdrop = backdrop;
+}
+
+function drawSimulationDensity(ctx, positions, forecast, width, height) {
+  const resolution = 4;
+  const densityWidth = Math.max(1, Math.ceil(width / resolution));
+  const densityHeight = Math.max(1, Math.ceil(height / resolution));
+  const counts = new Uint16Array(densityWidth * densityHeight);
+  let maximum = 0;
+  for (const position of positions) {
+    const x = Math.max(
+      0,
+      Math.min(densityWidth - 1, Math.floor(position.x / resolution))
+    );
+    const y = Math.max(
+      0,
+      Math.min(densityHeight - 1, Math.floor(position.y / resolution))
+    );
+    const index = y * densityWidth + x;
+    counts[index] += 1;
+    maximum = Math.max(maximum, counts[index]);
+  }
+  if (!maximum) return;
+  const density = state.simulationDensityCanvas || document.createElement("canvas");
+  state.simulationDensityCanvas = density;
+  if (density.width !== densityWidth || density.height !== densityHeight) {
+    density.width = densityWidth;
+    density.height = densityHeight;
+  }
+  const densityCtx = density.getContext("2d");
+  const image = densityCtx.createImageData(densityWidth, densityHeight);
+  const color = forecast ? [125, 165, 178] : [178, 157, 112];
+  for (let index = 0; index < counts.length; index += 1) {
+    if (!counts[index]) continue;
+    const intensity = Math.pow(counts[index] / maximum, 0.55);
+    const offset = index * 4;
+    image.data[offset] = color[0];
+    image.data[offset + 1] = color[1];
+    image.data[offset + 2] = color[2];
+    image.data[offset + 3] = Math.round(150 * intensity);
+  }
+  densityCtx.putImageData(image, 0, 0);
+  ctx.save();
+  ctx.globalAlpha = 0.82;
+  ctx.filter = "blur(8px)";
+  ctx.drawImage(density, 0, 0, width, height);
+  ctx.restore();
+}
+
+function drawSimulationTrails(
+  ctx,
+  ensemble,
+  segment,
+  fraction,
+  project,
+  forecast
+) {
+  ctx.save();
+  ctx.lineWidth = 0.7;
+  ctx.globalAlpha = forecast ? 0.12 : 0.085;
+  for (const sample of ensemble.paths) {
+    const flat = sample.path;
+    const firstSegment = Math.max(0, segment - 5);
+    const firstOffset = Math.min(firstSegment * 2, flat.length - 2);
+    ctx.beginPath();
+    const [startX, startY] = project(
+      Number(flat[firstOffset]),
+      Number(flat[firstOffset + 1])
+    );
+    ctx.moveTo(startX, startY);
+    for (let trailSegment = firstSegment + 1; trailSegment <= segment; trailSegment += 1) {
+      const offset = Math.min(trailSegment * 2, flat.length - 2);
+      const [x, y] = project(
+        Number(flat[offset]),
+        Number(flat[offset + 1])
+      );
+      ctx.lineTo(x, y);
+    }
+    const currentOffset = Math.min(segment * 2, flat.length - 2);
+    const nextOffset = Math.min(currentOffset + 2, flat.length - 2);
+    const lat =
+      Number(flat[currentOffset])
+      + (Number(flat[nextOffset]) - Number(flat[currentOffset])) * fraction;
+    const lon =
+      Number(flat[currentOffset + 1])
+      + (Number(flat[nextOffset + 1]) - Number(flat[currentOffset + 1])) * fraction;
+    const [currentX, currentY] = project(lat, lon);
+    ctx.lineTo(currentX, currentY);
+    ctx.strokeStyle = forecast
+      ? "#9bb8c3"
+      : simulationBehaviorColors[sample.behavior] || "#9bb8c3";
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function resizeSimulationCanvas() {
+  if (els.simulationViewer.classList.contains("hidden")) return;
+  if (state.simulationMap) {
+    state.simulationMap.invalidateSize({ pan: false });
+  }
+  const rect = els.simulationViewerCanvas.getBoundingClientRect();
+  const width = Math.max(240, Math.round(rect.width));
+  const height = Math.max(200, Math.round(rect.height));
+  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  els.simulationViewerCanvas.width = Math.round(width * pixelRatio);
+  els.simulationViewerCanvas.height = Math.round(height * pixelRatio);
+  buildSimulationBackdrop(width, height);
+  drawSimulationFrame();
+}
+
+function simulationTimelinePosition(progress) {
+  const timeline =
+    state.simulationData?.simulation_ensemble?.timeline_minutes || [0];
+  const totalMinutes = Number(timeline[timeline.length - 1]) || 1;
+  const minute = Math.max(0, Math.min(totalMinutes, progress * totalMinutes));
+  let segment = 0;
+  while (
+    segment < timeline.length - 2 &&
+    Number(timeline[segment + 1]) < minute
+  ) {
+    segment += 1;
+  }
+  const startMinute = Number(timeline[segment]) || 0;
+  const endMinute = Number(timeline[segment + 1]) || startMinute + 1;
+  const fraction = Math.max(
+    0,
+    Math.min(1, (minute - startMinute) / Math.max(0.0001, endMinute - startMinute))
+  );
+  return { minute, segment, fraction };
+}
+
+function drawSimulationFrame() {
+  const prediction = state.simulationData;
+  const ensemble = prediction?.simulation_ensemble;
+  const project = state.simulationProjection;
+  if (!ensemble || !project || !state.simulationBackdrop) return;
+  const canvas = els.simulationViewerCanvas;
+  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  const width = canvas.width / pixelRatio;
+  const height = canvas.height / pixelRatio;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(state.simulationBackdrop, 0, 0);
+
+  const { minute, segment, fraction } = simulationTimelinePosition(
+    state.simulationProgress
+  );
+  const currentMinute = Number(
+    ensemble.timeline_minutes[ensemble.current_path_index]
+  ) || 0;
+  const isForecast = minute > currentMinute;
+  els.simulationViewerPhase.textContent = isForecast
+    ? "Forward outlook"
+    : "Possible movement since last fix";
+  els.simulationViewerTime.textContent = isForecast
+    ? `+${formatSilenceAge(Math.max(0, minute - currentMinute) * 60)}`
+    : formatSilenceAge(minute * 60);
+  els.simulationViewerTimeline.value = String(
+    Math.round(state.simulationProgress * 1000)
+  );
+
+  const positions = [];
+  for (let sampleIndex = 0; sampleIndex < ensemble.paths.length; sampleIndex += 1) {
+    const sample = ensemble.paths[sampleIndex];
+    const flat = sample.path;
+    const startOffset = Math.min(segment * 2, flat.length - 2);
+    const endOffset = Math.min(startOffset + 2, flat.length - 2);
+    const lat =
+      Number(flat[startOffset])
+      + (Number(flat[endOffset]) - Number(flat[startOffset])) * fraction;
+    const lon =
+      Number(flat[startOffset + 1])
+      + (Number(flat[endOffset + 1]) - Number(flat[startOffset + 1])) * fraction;
+    const [x, y] = project(lat, lon);
+    positions.push({
+      x,
+      y,
+      lat,
+      lon,
+      behavior: sample.behavior,
+      index: sampleIndex,
+    });
+  }
+  state.simulationPositions = positions;
+  drawSimulationDensity(ctx, positions, isForecast, width, height);
+  drawSimulationTrails(
+    ctx,
+    ensemble,
+    segment,
+    fraction,
+    project,
+    isForecast
+  );
+
+  for (const [behavior, color] of Object.entries(simulationBehaviorColors)) {
+    ctx.beginPath();
+    for (const position of positions) {
+      if (position.behavior !== behavior) continue;
+      ctx.moveTo(position.x + 1.25, position.y);
+      ctx.arc(position.x, position.y, 1.25, 0, Math.PI * 2);
+    }
+    ctx.fillStyle = color;
+    ctx.globalAlpha = isForecast ? 0.82 : 0.72;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function animateSimulationViewer(timestamp) {
+  if (
+    els.simulationViewer.classList.contains("hidden") ||
+    !state.simulationData
+  ) {
+    state.simulationFrame = null;
+    return;
+  }
+  if (
+    state.simulationLastDrawAt !== null
+    && timestamp - state.simulationLastDrawAt < 32
+  ) {
+    state.simulationFrame = requestAnimationFrame(animateSimulationViewer);
+    return;
+  }
+  state.simulationLastDrawAt = timestamp;
+  if (state.simulationPlaying) {
+    if (state.simulationLastFrameAt !== null) {
+      state.simulationProgress +=
+        (timestamp - state.simulationLastFrameAt) / 14000;
+      if (state.simulationProgress > 1) state.simulationProgress %= 1;
+    }
+    state.simulationLastFrameAt = timestamp;
+    drawSimulationFrame();
+  } else {
+    state.simulationLastFrameAt = null;
+  }
+  state.simulationFrame = requestAnimationFrame(animateSimulationViewer);
+}
+
+function initializeSimulationViewer(prediction, vessel) {
+  const ensemble = prediction.simulation_ensemble;
+  state.simulationData = prediction;
+  state.simulationProgress = 0;
+  state.simulationPlaying = true;
+  state.simulationLastFrameAt = null;
+  state.simulationLastDrawAt = null;
+  els.simulationViewerTitle.textContent = "Monte Carlo Simulation";
+  els.simulationViewerContext.textContent =
+    vessel.name || `MMSI ${vessel.mmsi}`;
+  els.simulationViewerCount.textContent =
+    `${ensemble.count.toLocaleString()} paths`;
+  const totalMinutes =
+    Number(ensemble.timeline_minutes[ensemble.timeline_minutes.length - 1]) || 1;
+  const currentMinute =
+    Number(ensemble.timeline_minutes[ensemble.current_path_index]) || 0;
+  els.simulationViewerTimeline.style.setProperty(
+    "--current-boundary",
+    `${Math.max(0, Math.min(100, currentMinute / totalMinutes * 100))}%`
+  );
+  els.simulationViewerPlay.textContent = "Pause";
+  const counts = {};
+  for (const sample of ensemble.paths) {
+    counts[sample.behavior] = (counts[sample.behavior] || 0) + 1;
+  }
+  els.simulationViewerLegend.innerHTML = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([behavior, count]) => {
+      const color = simulationBehaviorColors[behavior] || "#6fc9e8";
+      return `<span style="color:${color}"><i></i>` +
+        `${escapeHtml(simulationBehaviorLabels[behavior] || behavior)} ` +
+        `${count}</span>`;
+    })
+    .join("");
+  els.simulationViewerLoading.classList.add("hidden");
+  prepareSimulationMap(ensemble.bounds);
+  resizeSimulationCanvas();
+  stopSimulationAnimation();
+  state.simulationFrame = requestAnimationFrame(animateSimulationViewer);
+}
+
+async function openSimulationViewer() {
+  const vessel = state.selectedVessel;
+  if (!vessel?.dark) return;
+  const requestId = ++state.simulationRequestId;
+  const key = predictionCacheKey(vessel);
+  state.simulationViewerKey = key;
+  els.simulationViewer.classList.remove("hidden");
+  els.simulationViewerLoading.innerHTML =
+    `<span></span>Running the navigation model…`;
+  els.simulationViewerLoading.classList.remove("hidden");
+  els.simulationViewerTooltip.classList.add("hidden");
+  stopSimulationAnimation();
+  let prediction = state.simulationCache.get(key);
+  try {
+    if (!prediction) {
+      prediction = await getJson(
+        `/api/global/${encodeURIComponent(vessel.mmsi)}/prediction?include_samples=1`
+      );
+      for (const existingKey of state.simulationCache.keys()) {
+        if (
+          existingKey.startsWith(`${vessel.mmsi}:`) &&
+          existingKey !== key
+        ) {
+          state.simulationCache.delete(existingKey);
+        }
+      }
+      state.simulationCache.set(key, prediction);
+    }
+  } catch (_err) {
+    if (requestId === state.simulationRequestId) {
+      els.simulationViewerLoading.innerHTML =
+        "The simulation ensemble is temporarily unavailable.";
+    }
+    return;
+  }
+  if (
+    requestId !== state.simulationRequestId ||
+    state.selectedMmsi !== vessel.mmsi
+  ) {
+    return;
+  }
+  initializeSimulationViewer(prediction, vessel);
+}
+
+function closeSimulationViewer() {
+  state.simulationRequestId += 1;
+  state.simulationViewerKey = null;
+  state.simulationData = null;
+  state.simulationPositions = [];
+  state.simulationBackdrop = null;
+  stopSimulationAnimation();
+  els.simulationViewer.classList.add("hidden");
+  els.simulationViewerTooltip.classList.add("hidden");
+}
+
 function hideTrajectory({ restoreView = true } = {}) {
   stopMapFlight();
   stopTrajectoryAnimation();
+  closeSimulationViewer();
   setTrajectoryModesDisabled(false);
   state.trajectoryRenderId += 1;
   const returnView = state.preSelectionView;
@@ -1879,6 +2463,7 @@ async function showTrajectory(
   }
   const previousMarker = globalMarkers.get(state.selectedMmsi);
   if (state.selectedMmsi !== v.mmsi) {
+    closeSimulationViewer();
     postJson("/api/global/pin", { mmsi: v.mmsi }).catch(() => {});
   }
   state.selectedMmsi = v.mmsi;
@@ -1932,7 +2517,15 @@ async function showTrajectory(
   }
   const modeSwitch = els.trajectoryPanel.querySelector(".trajectory-mode-switch");
   modeSwitch.classList.toggle("hidden", !v.dark);
+  els.simulationViewerOpen.classList.toggle("hidden", !v.dark);
+  if (
+    !els.simulationViewer.classList.contains("hidden") &&
+    state.simulationViewerKey !== predictionCacheKey(v)
+  ) {
+    closeSimulationViewer();
+  }
   if (!v.dark) {
+    closeSimulationViewer();
     state.selectedPredictionKey = null;
     setTrajectoryModesDisabled(false);
     els.trajectoryEnvironment.innerHTML = "";
@@ -2085,14 +2678,13 @@ async function showTrajectory(
   ]) {
     [...regions].reverse().forEach((region) => {
       const level = Number(region.level) || 95;
-      const fillOpacity = level === 50 ? 0.14 : level === 80 ? 0.08 : 0.035;
+      const fillOpacity = level === 50 ? 0.16 : level === 80 ? 0.095 : 0.05;
       L.polygon(region.polygon || [], {
         color: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
-        weight: level === 50 ? 1.4 : 1,
-        opacity: phase === "elapsed" ? 0.75 : 0.55,
+        weight: 0.55,
+        opacity: phase === "elapsed" ? 0.26 : 0.2,
         fillColor: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
         fillOpacity,
-        dashArray: phase === "forecast" ? "4 5" : null,
         interactive: false,
         className: `confidence-region confidence-${phase} confidence-${level}`,
       }).addTo(globalProjectionLayer);
@@ -2111,6 +2703,7 @@ async function showTrajectory(
     }).addTo(globalProjectionLayer);
   }
   scenarios.forEach((scenario, index) => {
+    const prominent = index < 3;
     const color = colors[index % colors.length];
     const path = scenario.path;
     const end = path[path.length - 1];
@@ -2141,27 +2734,27 @@ async function showTrajectory(
     ];
     if (elapsedPath.length > 1) L.polyline(elapsedPath, {
       color: "#ffb020",
-      weight: 1.6,
-      opacity: 0.68,
+      weight: prominent ? 1.6 : 0.75,
+      opacity: prominent ? 0.68 : 0.2,
       dashArray: "3 5",
       interactive: false,
       className: `trajectory-path trajectory-elapsed trajectory-path-${index}`,
     }).addTo(globalProjectionLayer);
     if (forecastPath.length > 1) L.polyline(forecastPath, {
       color,
-      weight: 2,
-      opacity: 0.9,
+      weight: prominent ? 2 : 0.75,
+      opacity: prominent ? 0.86 : 0.2,
       dashArray: "6 5",
       interactive: false,
       className: `trajectory-path trajectory-forecast trajectory-path-${index}`,
     }).addTo(globalProjectionLayer);
     L.circleMarker(path[currentIndex], {
-      radius: 3,
+      radius: prominent ? 3 : 1.5,
       color: "#ffcf66",
       weight: 1,
-      opacity: 0.9,
+      opacity: prominent ? 0.9 : 0.3,
       fillColor: "#ffb020",
-      fillOpacity: 0.9,
+      fillOpacity: prominent ? 0.9 : 0.3,
       interactive: false,
       className: "trajectory-current-position",
     }).addTo(globalProjectionLayer);
@@ -2182,7 +2775,7 @@ async function showTrajectory(
       Number(v.course) || Number(v.heading) || 0
     );
     const runner = L.marker(initialPosition, {
-      icon: trajectoryRunnerIcon(color, shortRoute),
+      icon: trajectoryRunnerIcon(color, shortRoute || !prominent),
       interactive: false,
       keyboard: false,
       zIndexOffset: 1000,
@@ -2193,6 +2786,7 @@ async function showTrajectory(
       path,
       phaseOffset,
       shortRoute,
+      opacityScale: prominent ? 1 : 0.35,
       stableBearing,
       displayBearing: stableBearing,
     });
@@ -2264,7 +2858,7 @@ function applyGlobalFix(v) {
       ...globalMarkerStyle(v),
       interactive: true,
       bubblingMouseEvents: false,
-    }).addTo(globalLayer);
+    });
     m.on("click", () => {
       m.closeTooltip();
       const latest = state.globalVessels.get(m._fix.mmsi) || m._fix;
@@ -2279,6 +2873,7 @@ function applyGlobalFix(v) {
   m._stale = false;
   m._fix = v;
   m._dark = !!v.dark;
+  syncGlobalMarkerVisibility(m, v);
   m._riskHigh = Number(v.risk?.high_usd || 0);
   const contextFlags = [
     v.context?.ofac ? "SANCTIONS LIST MATCH" : "",
@@ -2300,6 +2895,58 @@ function applyGlobalFix(v) {
 }
 
 els.trajectoryClose.addEventListener("click", hideTrajectory);
+els.simulationViewerOpen.addEventListener("click", openSimulationViewer);
+els.simulationViewerClose.addEventListener("click", closeSimulationViewer);
+els.simulationViewerPlay.addEventListener("click", () => {
+  state.simulationPlaying = !state.simulationPlaying;
+  state.simulationLastFrameAt = null;
+  els.simulationViewerPlay.textContent =
+    state.simulationPlaying ? "Pause" : "Play";
+});
+els.simulationViewerRestart.addEventListener("click", () => {
+  state.simulationProgress = 0;
+  state.simulationLastFrameAt = null;
+  drawSimulationFrame();
+});
+els.simulationViewerTimeline.addEventListener("input", () => {
+  state.simulationProgress =
+    Math.max(0, Math.min(1, Number(els.simulationViewerTimeline.value) / 1000));
+  state.simulationLastFrameAt = null;
+  drawSimulationFrame();
+});
+els.simulationViewerCanvas.addEventListener("pointermove", (event) => {
+  if (!state.simulationPositions.length) return;
+  const rect = els.simulationViewerCanvas.getBoundingClientRect();
+  const pointerX = event.clientX - rect.left;
+  const pointerY = event.clientY - rect.top;
+  let nearest = null;
+  let nearestDistance = 64;
+  for (const position of state.simulationPositions) {
+    const distance =
+      (position.x - pointerX) ** 2 + (position.y - pointerY) ** 2;
+    if (distance < nearestDistance) {
+      nearest = position;
+      nearestDistance = distance;
+    }
+  }
+  if (!nearest) {
+    els.simulationViewerTooltip.classList.add("hidden");
+    return;
+  }
+  els.simulationViewerTooltip.classList.remove("hidden");
+  els.simulationViewerTooltip.style.left =
+    `${Math.min(rect.width - 175, pointerX + 10)}px`;
+  els.simulationViewerTooltip.style.top =
+    `${Math.max(8, pointerY - 52)}px`;
+  els.simulationViewerTooltip.innerHTML =
+    `<strong>Simulation ${nearest.index + 1}</strong>` +
+    `${escapeHtml(simulationBehaviorLabels[nearest.behavior] || nearest.behavior)}<br>` +
+    `${nearest.lat.toFixed(4)}, ${nearest.lon.toFixed(4)}`;
+});
+els.simulationViewerCanvas.addEventListener("pointerleave", () => {
+  els.simulationViewerTooltip.classList.add("hidden");
+});
+window.addEventListener("resize", resizeSimulationCanvas);
 for (const button of document.querySelectorAll(".trajectory-mode")) {
   button.addEventListener("click", () => {
     if (button.disabled) return;
@@ -2493,7 +3140,6 @@ function frameRegionalProvider() {
 function setGlobalLayer() {
   state.globalLayerOn = true;
   document.body.classList.add("live-mode");
-  els.btnGlobalLayer.classList.add("active");
   map.removeLayer(localLayer);
   map.removeLayer(zonesLayer);
   globalLayer.addTo(map);
@@ -2681,6 +3327,19 @@ document.addEventListener("keydown", (ev) => {
   else if (ev.key === "Escape") els.btnReset.click();
 });
 
+for (const button of els.vesselVisibilityBtns) {
+  button.addEventListener("click", () => {
+    setVesselVisibility(button.dataset.vesselVisibility);
+  });
+}
+let initialVesselVisibility = "both";
+try {
+  initialVesselVisibility =
+    localStorage.getItem("aegis-vessel-visibility") || "both";
+} catch (_error) {
+  // Use the default when browser storage is unavailable.
+}
+setVesselVisibility(initialVesselVisibility);
 setGlobalLayer();
 connect();
 jtmsReset().then(() => {

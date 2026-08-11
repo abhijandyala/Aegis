@@ -211,6 +211,25 @@ def test_confidence_regions_are_nested_and_probabilities_normalized():
     ) < 0.001
 
 
+def test_optional_simulation_ensemble_contains_all_exact_samples_compactly():
+    vessel = _dark_vessel(age_s=23 * 3600)
+    standard = predict_dark_vessel(vessel)
+    detailed = predict_dark_vessel(vessel, include_samples=True)
+
+    assert "simulation_ensemble" not in standard
+    ensemble = detailed["simulation_ensemble"]
+    assert ensemble["count"] == 600
+    assert len(ensemble["paths"]) == 600
+    assert ensemble["temporally_downsampled"] is True
+    assert ensemble["display_points_per_path"] <= 73
+    assert len(ensemble["timeline_minutes"]) == ensemble["display_points_per_path"]
+    assert all(
+        len(sample["path"]) == ensemble["display_points_per_path"] * 2
+        for sample in ensemble["paths"]
+    )
+    assert ensemble["source"].startswith("same deterministic Monte Carlo model")
+
+
 def test_live_environment_is_not_applied_to_historical_gap():
     vessel = _dark_vessel(age_s=6 * 3600)
     current = {
