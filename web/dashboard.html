@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="dashboard.css?v=20260811-vessel-filter" />
+<link rel="stylesheet" href="dashboard.css?v=20260811-forward-runners" />
 <link rel="stylesheet" href="onboarding.css?v=20260802-intro8" />
 </head>
 <body class="intro-active">
@@ -80,6 +80,37 @@
 
     <div id="map-wrap">
       <div id="map"></div>
+      <section id="trajectory-loading" class="trajectory-loading" aria-hidden="true" aria-live="polite">
+        <div class="trajectory-loading-field" aria-hidden="true"></div>
+        <div class="trajectory-loading-content">
+          <p>Maritime prediction</p>
+          <h2>Building probable routes</h2>
+          <span id="trajectory-loading-vessel">Preparing selected contact</span>
+          <div class="trajectory-loading-progress" aria-hidden="true"><i></i></div>
+          <div class="trajectory-loading-stages">
+            <div data-loading-stage="terrain">
+              <i aria-hidden="true"></i>
+              <span><strong>Navigable water</strong><small>Resolving coastline and passages</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="ocean">
+              <i aria-hidden="true"></i>
+              <span><strong>Ocean conditions</strong><small>Current, wave and drift field</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="weather">
+              <i aria-hidden="true"></i>
+              <span><strong>Weather conditions</strong><small>Wind speed and direction</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="routes">
+              <i aria-hidden="true"></i>
+              <span><strong>Monte Carlo model</strong><small>Evaluating 600 possible movements</small></span>
+              <b>Queued</b>
+            </div>
+          </div>
+        </div>
+      </section>
       <section id="fishing-intelligence" class="fishing-intelligence" aria-label="Fishing intelligence layers">
         <button id="fishing-intelligence-toggle" class="fishing-intelligence-toggle" type="button" aria-expanded="false">
           <span class="intel-pulse" aria-hidden="true"></span>
@@ -120,6 +151,11 @@
         <div class="simulation-viewer-stage">
           <div id="simulation-viewer-map" aria-hidden="true"></div>
           <canvas id="simulation-viewer-canvas"></canvas>
+          <div class="simulation-viewer-map-zoom" aria-label="Simulation map zoom">
+            <button id="simulation-viewer-zoom-in" type="button" aria-label="Zoom simulation map in">+</button>
+            <button id="simulation-viewer-zoom-out" type="button" aria-label="Zoom simulation map out">−</button>
+          </div>
+          <div id="simulation-viewer-scale" class="simulation-viewer-scale" aria-hidden="true"></div>
           <div class="simulation-viewer-north" aria-hidden="true">N</div>
           <div id="simulation-viewer-loading" class="simulation-viewer-loading">
             <span></span>
@@ -133,8 +169,12 @@
         </div>
         <input id="simulation-viewer-timeline" class="simulation-viewer-timeline" type="range" min="0" max="1000" value="0" aria-label="Simulation timeline" />
         <div class="simulation-viewer-controls">
-          <button id="simulation-viewer-play" type="button">Pause</button>
-          <button id="simulation-viewer-restart" type="button">Restart</button>
+          <button id="simulation-viewer-play" type="button" aria-label="Pause simulation" title="Pause simulation">
+            <span class="simulation-control-icon icon-pause" aria-hidden="true"></span>
+          </button>
+          <button id="simulation-viewer-restart" type="button" aria-label="Restart simulation" title="Restart simulation">
+            <span class="simulation-control-icon icon-restart" aria-hidden="true"></span>
+          </button>
           <span id="simulation-viewer-count">600 paths</span>
         </div>
         <div id="simulation-viewer-legend" class="simulation-viewer-legend"></div>
@@ -174,7 +214,7 @@
           <div class="rail-header">
             <div>
               <div class="brand">AEGIS</div>
-              <h1 class="rail-title">Maritime intelligence overview</h1>
+              <h1 class="rail-title">Maritime Operational Picture</h1>
             </div>
             <span id="assoc-badge" class="assoc-badge">GLOBAL</span>
           </div>
@@ -279,6 +319,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="onboarding.js?v=20260802-intro7"></script>
-<script src="dashboard.js?v=20260811-vessel-filter"></script>
+<script src="dashboard.js?v=20260811-forward-runners"></script>
 </body>
 </html>

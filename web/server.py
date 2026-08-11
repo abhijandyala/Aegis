@@ -259,6 +259,11 @@ def build_app(cache: dict) -> web.Application:
     app["ocean_tasks"] = set()
     app["ocean_pending"] = set()
     app["weather_pending"] = set()
+    app["prediction_cache"] = {}
+    app["prediction_latest"] = {}
+    app["prediction_tasks"] = {}
+    app["terrain_tasks"] = {}
+    app["terrain_ready"] = set()
 
     async def start_global_feed(app: web.Application) -> None:
         if app["global_feed"] is not None:
@@ -456,22 +461,23 @@ def build_app(cache: dict) -> web.Application:
             feed.pin(mmsi)
         return web.json_response({"pinned_mmsi": feed.pinned_mmsi, "live": feed.live})
 
-    async def api_dark_prediction(request: web.Request) -> web.Response:
-        feed = app["global_feed"]
-        mmsi = int(request.match_info["mmsi"])
-        if feed is None or mmsi not in feed.vessels:
-            return web.json_response({"error": "vessel not found"}, status=404)
-        vessel = feed.vessel_snapshot(mmsi)
-        if vessel is None:
-            return web.json_response({"error": "vessel not found"}, status=404)
-        if not vessel.get("dark"):
-            return web.json_response(
-                {"error": "trajectory prediction is only available after AIS silence"},
-                status=409,
-            )
-        loop = asyncio.get_running_loop()
-        lat = float(vessel["lat"])
-        lon = float(vessel["lon"])
+    def prediction_radius_km(vessel: dict) -> float:
+        silence_hours = min(
+            24.0,
+            max(0.0, float(vessel.get("age_s") or 0.0) / 3600),
+        )
+        speed_kn = max(0.0, float(vessel.get("speed_kn") or 0.0))
+        if not math.isfinite(speed_kn) or speed_kn >= 50:
+            speed_kn = 5.0
+        return min(
+            700.0,
+            max(35.0, (speed_kn * (silence_hours + 0.5) + 20.0) * 1.852),
+        )
+
+    def schedule_environment(
+        lat: float,
+        lon: float,
+    ) -> tuple[dict, dict]:
         client = app["ocean_client"]
         ocean = client.cached_current_grid(lat, lon)
         if ocean is None:
@@ -521,17 +527,147 @@ def build_app(cache: dict) -> web.Application:
                 task = asyncio.create_task(warm_weather())
                 app["ocean_tasks"].add(task)
                 task.add_done_callback(app["ocean_tasks"].discard)
+        return ocean, weather
 
-        include_samples = request.query.get("include_samples") == "1"
-        prediction = await loop.run_in_executor(
-            None,
-            lambda: predict_dark_vessel(
-                vessel,
-                ocean,
-                weather,
-                include_samples=include_samples,
-            ),
+    def schedule_terrain(
+        lat: float,
+        lon: float,
+        radius_km: float,
+    ) -> asyncio.Future:
+        terrain_key = (
+            round(lat, 2),
+            round(lon, 2),
+            round(radius_km / 25),
         )
+        if terrain_key in app["terrain_ready"]:
+            completed = asyncio.get_running_loop().create_future()
+            completed.set_result({"available": True, "cached": True})
+            return completed
+        task = app["terrain_tasks"].get(terrain_key)
+        if task is None:
+            task = asyncio.create_task(asyncio.to_thread(
+                maritime_context().prime_navigable_water,
+                lat,
+                lon,
+                radius_km,
+            ))
+            app["terrain_tasks"][terrain_key] = task
+
+            def remove_terrain_task(completed: asyncio.Task) -> None:
+                if (
+                    not completed.cancelled()
+                    and completed.exception() is None
+                    and completed.result().get("available")
+                ):
+                    app["terrain_ready"].add(terrain_key)
+                if app["terrain_tasks"].get(terrain_key) is completed:
+                    app["terrain_tasks"].pop(terrain_key, None)
+
+            task.add_done_callback(remove_terrain_task)
+        return task
+
+    async def api_prediction_conditions(request: web.Request) -> web.Response:
+        feed = app["global_feed"]
+        mmsi = int(request.match_info["mmsi"])
+        vessel = feed.vessel_snapshot(mmsi) if feed is not None else None
+        if vessel is None:
+            return web.json_response({"error": "vessel not found"}, status=404)
+        lat = float(vessel["lat"])
+        lon = float(vessel["lon"])
+        ocean, weather = schedule_environment(lat, lon)
+        terrain_task = schedule_terrain(
+            lat,
+            lon,
+            prediction_radius_km(vessel),
+        )
+        terrain = maritime_context().terrain_status(lat, lon)
+        return web.json_response({
+            "ocean_conditions": ocean,
+            "weather_conditions": weather,
+            "terrain": {
+                **terrain,
+                "pending": not terrain_task.done(),
+            },
+        })
+
+    async def api_dark_prediction(request: web.Request) -> web.Response:
+        feed = app["global_feed"]
+        mmsi = int(request.match_info["mmsi"])
+        if feed is None or mmsi not in feed.vessels:
+            return web.json_response({"error": "vessel not found"}, status=404)
+        vessel = feed.vessel_snapshot(mmsi)
+        if vessel is None:
+            return web.json_response({"error": "vessel not found"}, status=404)
+        if not vessel.get("dark"):
+            return web.json_response(
+                {"error": "trajectory prediction is only available after AIS silence"},
+                status=409,
+            )
+        include_samples = request.query.get("include_samples") == "1"
+        base_cache_key = (
+            mmsi,
+            round(float(vessel.get("last_seen") or 0.0), 3),
+            int(float(vessel.get("age_s") or 0.0) // 300),
+        )
+        if include_samples:
+            latest_prediction = app["prediction_latest"].get(base_cache_key)
+            if latest_prediction is not None:
+                return web.json_response(latest_prediction)
+        lat = float(vessel["lat"])
+        lon = float(vessel["lon"])
+        ocean, weather = schedule_environment(lat, lon)
+        terrain_task = schedule_terrain(
+            lat,
+            lon,
+            prediction_radius_km(vessel),
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(terrain_task), timeout=4.0)
+        except asyncio.TimeoutError:
+            pass
+
+        environment_key = json.dumps(
+            {
+                "ocean": ocean,
+                "weather": weather,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        cache_key = (
+            mmsi,
+            round(float(vessel.get("last_seen") or 0.0), 3),
+            int(float(vessel.get("age_s") or 0.0) // 300),
+            environment_key,
+        )
+        prediction = app["prediction_cache"].get(cache_key)
+        if prediction is None:
+            task = app["prediction_tasks"].get(cache_key)
+            if task is None:
+                task = asyncio.create_task(asyncio.to_thread(
+                    predict_dark_vessel,
+                    vessel,
+                    ocean,
+                    weather,
+                    True,
+                ))
+                app["prediction_tasks"][cache_key] = task
+            try:
+                prediction = await task
+            finally:
+                app["prediction_tasks"].pop(cache_key, None)
+            app["prediction_cache"][cache_key] = prediction
+            for old_key in list(app["prediction_cache"]):
+                if old_key[0] == mmsi and old_key != cache_key:
+                    del app["prediction_cache"][old_key]
+            while len(app["prediction_cache"]) > 32:
+                del app["prediction_cache"][next(iter(app["prediction_cache"]))]
+        app["prediction_latest"][base_cache_key] = prediction
+        for old_key in list(app["prediction_latest"]):
+            if old_key[0] == mmsi and old_key != base_cache_key:
+                del app["prediction_latest"][old_key]
+        while len(app["prediction_latest"]) > 32:
+            del app["prediction_latest"][next(iter(app["prediction_latest"]))]
         return web.json_response(prediction)
 
     async def api_context_layers(request: web.Request) -> web.Response:
@@ -669,6 +805,10 @@ def build_app(cache: dict) -> web.Application:
 
     app.router.add_get("/api/global", api_global)
     app.router.add_post("/api/global/pin", api_global_pin)
+    app.router.add_get(
+        r"/api/global/{mmsi:\d{9}}/conditions",
+        api_prediction_conditions,
+    )
     app.router.add_get(r"/api/global/{mmsi:\d{9}}/prediction", api_dark_prediction)
     app.router.add_get("/api/context/layers", api_context_layers)
     app.router.add_get("/api/context/nearby", api_nearby_context)

@@ -66,6 +66,11 @@ const els = {
   trajectoryOptions: document.getElementById("trajectory-options"),
   trajectoryHeading: document.getElementById("trajectory-heading"),
   trajectoryNote: document.getElementById("trajectory-note"),
+  trajectoryLoading: document.getElementById("trajectory-loading"),
+  trajectoryLoadingVessel: document.getElementById("trajectory-loading-vessel"),
+  trajectoryLoadingStages: Array.from(
+    document.querySelectorAll("[data-loading-stage]")
+  ),
   overviewSelection: document.getElementById("overview-selection"),
   tabMoreToggle: document.getElementById("tab-more-toggle"),
   tabMoreMenu: document.getElementById("tab-more-menu"),
@@ -74,6 +79,9 @@ const els = {
   simulationViewerClose: document.getElementById("simulation-viewer-close"),
   simulationViewerMap: document.getElementById("simulation-viewer-map"),
   simulationViewerCanvas: document.getElementById("simulation-viewer-canvas"),
+  simulationViewerZoomIn: document.getElementById("simulation-viewer-zoom-in"),
+  simulationViewerZoomOut: document.getElementById("simulation-viewer-zoom-out"),
+  simulationViewerScale: document.getElementById("simulation-viewer-scale"),
   simulationViewerLoading: document.getElementById("simulation-viewer-loading"),
   simulationViewerTooltip: document.getElementById("simulation-viewer-tooltip"),
   simulationViewerTitle: document.getElementById("simulation-viewer-title"),
@@ -114,6 +122,8 @@ const state = {
   predictionCache: new Map(),
   predictionPolls: new Set(),
   selectedPredictionKey: null,
+  predictionLoadingSince: 0,
+  predictionLoadingMmsi: null,
   gfwCache: new Map(),
   gfwActivityCache: new Map(),
   gfwLayerMetadataLoaded: false,
@@ -137,6 +147,8 @@ const state = {
   simulationBackdrop: null,
   simulationDensityCanvas: null,
   simulationMap: null,
+  simulationZoomMin: 2,
+  simulationZoomMax: 19,
   simulationPositions: [],
   simulationRequestId: 0,
   simulationViewerKey: null,
@@ -720,6 +732,56 @@ function formatSilenceAge(value) {
   }
   const minutes = totalMinutes;
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function formatLatitude(value) {
+  const latitude = Number(value);
+  if (!Number.isFinite(latitude)) return null;
+  return `${Math.abs(latitude).toFixed(4)}° ${latitude >= 0 ? "N" : "S"}`;
+}
+
+function formatLongitude(value) {
+  const longitude = Number(value);
+  if (!Number.isFinite(longitude)) return null;
+  return `${Math.abs(longitude).toFixed(4)}° ${longitude >= 0 ? "E" : "W"}`;
+}
+
+function formatMaritimeDistanceMeters(value) {
+  const meters = Math.max(0, Number(value) || 0);
+  const nauticalMiles = meters / 1852;
+  if (nauticalMiles < 1) {
+    return `${Math.round(meters).toLocaleString()} m`;
+  }
+  const digits = nauticalMiles >= 100 ? 0 : 1;
+  return `${nauticalMiles.toFixed(digits)} NM`;
+}
+
+function formatMaritimeDistanceKm(value) {
+  return formatMaritimeDistanceMeters((Number(value) || 0) * 1000);
+}
+
+function aisShipTypeLabel(value) {
+  const code = Number(value);
+  if (!Number.isFinite(code) || code <= 0) return null;
+  if (code === 30) return "Fishing";
+  if (code === 31 || code === 32) return "Towing";
+  if (code === 33) return "Dredging";
+  if (code === 34) return "Diving operations";
+  if (code === 35) return "Military operations";
+  if (code === 36) return "Sailing";
+  if (code === 37) return "Pleasure craft";
+  if (code >= 40 && code <= 49) return "High-speed craft";
+  if (code === 50) return "Pilot vessel";
+  if (code === 51) return "Search and rescue";
+  if (code === 52) return "Tug";
+  if (code === 53) return "Port tender";
+  if (code === 55) return "Law enforcement";
+  if (code === 58) return "Medical transport";
+  if (code >= 60 && code <= 69) return "Passenger";
+  if (code >= 70 && code <= 79) return "Cargo";
+  if (code >= 80 && code <= 89) return "Tanker";
+  if (code >= 90 && code <= 99) return "Other";
+  return `AIS type ${code}`;
 }
 
 function updateFinancialRisk(msg) {
@@ -1517,14 +1579,13 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
       for (const runner of runners) {
         const runnerPhase = (phase + (runner.phaseOffset || 0)) % 1;
         const progress = Math.min(1, runnerPhase / travelEnd);
-        const eased = progress * progress * (3 - 2 * progress);
         const opacity = runnerPhase < fadeStart
           ? 1
           : Math.max(
             0,
             (travelEnd - runnerPhase) / (travelEnd - fadeStart)
           );
-        const scaled = eased * (runner.path.length - 1);
+        const scaled = progress * (runner.path.length - 1);
         const segment = Math.min(runner.path.length - 2, Math.floor(scaled));
         const fraction = scaled - segment;
         const from = runner.path[segment];
@@ -1586,6 +1647,15 @@ function stopSimulationAnimation() {
   state.simulationLastDrawAt = null;
 }
 
+function renderSimulationPlayControl() {
+  const action = state.simulationPlaying ? "Pause" : "Play";
+  els.simulationViewerPlay.setAttribute("aria-label", `${action} simulation`);
+  els.simulationViewerPlay.title = `${action} simulation`;
+  els.simulationViewerPlay.innerHTML =
+    `<span class="simulation-control-icon icon-${action.toLowerCase()}" ` +
+    `aria-hidden="true"></span>`;
+}
+
 function simulationProjector(bounds, width, height) {
   const south = Number(bounds?.[0]?.[0]) || 0;
   const west = Number(bounds?.[0]?.[1]) || 0;
@@ -1612,6 +1682,73 @@ function simulationProjector(bounds, width, height) {
   ];
 }
 
+function syncSimulationZoomControls() {
+  const zoom = state.simulationMap?.getZoom();
+  els.simulationViewerZoomIn.disabled =
+    !Number.isFinite(zoom) || zoom >= state.simulationZoomMax;
+  els.simulationViewerZoomOut.disabled =
+    !Number.isFinite(zoom) || zoom <= state.simulationZoomMin;
+  updateSimulationScale();
+}
+
+function updateSimulationScale() {
+  const simulationMap = state.simulationMap;
+  if (!simulationMap || !els.simulationViewerScale) return;
+  const maximumWidth = 78;
+  const size = simulationMap.getSize();
+  if (!size.x || !size.y) return;
+  const y = size.y / 2;
+  const maximumMeters = simulationMap.distance(
+    simulationMap.containerPointToLatLng([0, y]),
+    simulationMap.containerPointToLatLng([maximumWidth, y])
+  );
+  const candidates = [
+    50, 100, 200, 500,
+    1852, 3704, 9260, 18520, 37040, 92600,
+    185200, 370400, 926000, 1852000,
+  ];
+  let distanceMeters = candidates[0];
+  for (const candidate of candidates) {
+    if (candidate > maximumMeters) break;
+    distanceMeters = candidate;
+  }
+  const width = Math.max(
+    20,
+    Math.min(maximumWidth, distanceMeters / maximumMeters * maximumWidth)
+  );
+  els.simulationViewerScale.style.width = `${width}px`;
+  els.simulationViewerScale.textContent =
+    formatMaritimeDistanceMeters(distanceMeters);
+}
+
+function refreshSimulationMapProjection() {
+  if (
+    !state.simulationData
+    || els.simulationViewer.classList.contains("hidden")
+  ) {
+    return;
+  }
+  const rect = els.simulationViewerCanvas.getBoundingClientRect();
+  buildSimulationBackdrop(
+    Math.max(240, Math.round(rect.width)),
+    Math.max(200, Math.round(rect.height))
+  );
+  drawSimulationFrame();
+  syncSimulationZoomControls();
+}
+
+function changeSimulationZoom(delta, anchor = null) {
+  const simulationMap = state.simulationMap;
+  if (!simulationMap) return;
+  const target = Math.max(
+    state.simulationZoomMin,
+    Math.min(state.simulationZoomMax, simulationMap.getZoom() + delta)
+  );
+  if (target === simulationMap.getZoom()) return;
+  if (anchor) simulationMap.setZoomAround(anchor, target);
+  else simulationMap.setZoom(target, { animate: false });
+}
+
 function prepareSimulationMap(bounds) {
   if (state.simulationMap === null) {
     state.simulationMap = L.map(els.simulationViewerMap, {
@@ -1624,6 +1761,7 @@ function prepareSimulationMap(bounds) {
       keyboard: false,
       tap: false,
       zoomSnap: 0,
+      zoomAnimation: false,
       fadeAnimation: false,
       markerZoomAnimation: false,
     });
@@ -1637,12 +1775,10 @@ function prepareSimulationMap(bounds) {
         bounds: [[-85, -180], [85, 180]],
       }
     ).addTo(state.simulationMap);
-    L.control.scale({
-      imperial: false,
-      maxWidth: 82,
-      position: "bottomleft",
-    }).addTo(state.simulationMap);
+    state.simulationMap.on("zoomend", refreshSimulationMapProjection);
   }
+  state.simulationMap.setMinZoom(2);
+  state.simulationMap.setMaxZoom(19);
   state.simulationMap.invalidateSize({ pan: false });
   const fitBounds = L.latLngBounds(bounds);
   if (fitBounds.isValid()) {
@@ -1651,26 +1787,45 @@ function prepareSimulationMap(bounds) {
       padding: [24, 24],
       maxZoom: 14,
     });
+    const fittedZoom = state.simulationMap.getZoom();
+    state.simulationZoomMin = Math.max(2, fittedZoom - 1);
+    state.simulationZoomMax = Math.min(19, fittedZoom + 3);
+    state.simulationMap.setMinZoom(state.simulationZoomMin);
+    state.simulationMap.setMaxZoom(state.simulationZoomMax);
   }
+  syncSimulationZoomControls();
+}
+
+function confidenceRegionPolygons(region) {
+  if (Array.isArray(region?.water_polygons)) {
+    return region.water_polygons
+      .map((polygon) => [
+        polygon.exterior || [],
+        ...(polygon.holes || []),
+      ])
+      .filter((polygon) => polygon[0]?.length >= 3);
+  }
+  const polygon = region?.polygon || [];
+  return polygon.length >= 3 ? [[polygon]] : [];
 }
 
 function drawSimulationRegion(ctx, region, project, color, alpha) {
-  const polygon = region?.polygon || [];
-  if (polygon.length < 3) return;
+  const polygons = confidenceRegionPolygons(region);
+  if (!polygons.length) return;
   ctx.beginPath();
-  polygon.forEach((point, index) => {
-    const [x, y] = project(Number(point[0]), Number(point[1]));
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.closePath();
+  for (const polygon of polygons) {
+    for (const ring of polygon) {
+      ring.forEach((point, index) => {
+        const [x, y] = project(Number(point[0]), Number(point[1]));
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+    }
+  }
   ctx.fillStyle = color;
   ctx.globalAlpha = alpha;
-  ctx.fill();
-  ctx.globalAlpha = Math.min(0.18, alpha * 1.8);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 0.8;
-  ctx.stroke();
+  ctx.fill("evenodd");
   ctx.globalAlpha = 1;
 }
 
@@ -1997,7 +2152,7 @@ function initializeSimulationViewer(prediction, vessel) {
     "--current-boundary",
     `${Math.max(0, Math.min(100, currentMinute / totalMinutes * 100))}%`
   );
-  els.simulationViewerPlay.textContent = "Pause";
+  renderSimulationPlayControl();
   const counts = {};
   for (const sample of ensemble.paths) {
     counts[sample.behavior] = (counts[sample.behavior] || 0) + 1;
@@ -2077,6 +2232,7 @@ function hideTrajectory({ restoreView = true } = {}) {
   stopMapFlight();
   stopTrajectoryAnimation();
   closeSimulationViewer();
+  cancelPredictionLoading();
   setTrajectoryModesDisabled(false);
   state.trajectoryRenderId += 1;
   const returnView = state.preSelectionView;
@@ -2093,6 +2249,7 @@ function hideTrajectory({ restoreView = true } = {}) {
     selectedMarker.closeTooltip();
   }
   state.selectedVessel = null;
+  if (state.globalLayerOn) renderLiveRail(state.globalStatus);
   els.overviewSelection.classList.add("hidden");
   els.overviewSelection.innerHTML = "";
   els.trajectoryNearby.innerHTML = "";
@@ -2310,8 +2467,11 @@ async function loadGfwActivity(mmsi) {
 function refreshSelectedVessel(v) {
   const age = vesselSilenceAge(v);
   state.selectedVessel = { ...v, age_s: age };
+  if (state.globalLayerOn) renderLiveRail(state.globalStatus);
   const lastFix = new Date((Number(v.last_seen) || Date.now() / 1000) * 1000);
   const risk = v.risk || { low_usd: 0, high_usd: 0, items: [] };
+  const latitude = formatLatitude(v.lat);
+  const longitude = formatLongitude(v.lon);
   els.trajectoryName.textContent = v.name || `MMSI ${v.mmsi}`;
   els.trajectoryMeta.innerHTML =
     `<div class="vessel-status-line">` +
@@ -2322,10 +2482,16 @@ function refreshSelectedVessel(v) {
     `<span>Last fix ${escapeHtml(lastFix.toISOString().slice(11, 19))} UTC</span></div>` +
     `<div class="vessel-motion">${Number(v.speed_kn || 0).toFixed(1)} kn · ` +
     `${Number(v.course || 0).toFixed(0)}°` +
-    `${v.destination ? ` · ${escapeHtml(v.destination)}` : ""}</div>` +
+    `${v.destination
+      ? ` · ${escapeHtml(String(v.destination).replaceAll("<>", " → "))}`
+      : ""}</div>` +
     `<div class="vessel-identifiers">MMSI ${escapeHtml(v.mmsi)}` +
     `${v.imo ? ` · IMO ${escapeHtml(v.imo)}` : ""}` +
-    `${v.call_sign ? ` · ${escapeHtml(v.call_sign)}` : ""}</div>`;
+    `${v.call_sign ? ` · ${escapeHtml(v.call_sign)}` : ""}</div>` +
+    `<div class="vessel-position">` +
+    `<div><span>Latitude</span><strong>${escapeHtml(latitude || "Unavailable")}</strong></div>` +
+    `<div><span>Longitude</span><strong>${escapeHtml(longitude || "Unavailable")}</strong></div>` +
+    `</div>`;
   els.overviewSelection.classList.remove("hidden");
   els.overviewSelection.innerHTML =
     `<span>Selected vessel</span>` +
@@ -2333,7 +2499,9 @@ function refreshSelectedVessel(v) {
     `<b>${Number(v.speed_kn || 0).toFixed(1)} kn</b></div>` +
     `<small>${v.dark
       ? `AIS silent · ${escapeHtml(formatSilenceAge(age))}`
-      : "AIS reporting"} · ${Number(v.course || 0).toFixed(0)}° course</small>`;
+      : "AIS reporting"} · ${Number(v.course || 0).toFixed(0)}° course</small>` +
+    `<small class="overview-position">${escapeHtml(latitude || "Latitude unavailable")} · ` +
+    `${escapeHtml(longitude || "Longitude unavailable")}</small>`;
   els.trajectoryRisk.innerHTML =
     `<div class="trajectory-heading">Response planning</div>` +
     `<div class="trajectory-cost">${(risk.items || []).length
@@ -2366,7 +2534,11 @@ function trajectoryBounds(scenarios, start, confidenceRegions = []) {
     scenarios.flatMap((scenario) => scenario.path).concat([start])
   );
   for (const region of confidenceRegions) {
-    for (const point of region.polygon || []) bounds.extend(point);
+    for (const polygon of confidenceRegionPolygons(region)) {
+      for (const ring of polygon) {
+        for (const point of ring) bounds.extend(point);
+      }
+    }
   }
   return bounds;
 }
@@ -2401,6 +2573,91 @@ function trajectoryCameraOptions(bounds) {
 function setTrajectoryModesDisabled(disabled) {
   for (const button of document.querySelectorAll(".trajectory-mode")) {
     button.disabled = disabled;
+  }
+}
+
+function setPredictionLoadingStage(name, status, label) {
+  const row = els.trajectoryLoadingStages.find(
+    (stage) => stage.dataset.loadingStage === name
+  );
+  if (!row) return;
+  row.classList.toggle("is-loading", status === "loading");
+  row.classList.toggle("is-ready", status === "ready");
+  const statusLabel = row.querySelector("b");
+  if (statusLabel) {
+    statusLabel.textContent = label || (status === "ready" ? "Ready" : "Loading");
+  }
+}
+
+function showPredictionLoading(v) {
+  state.predictionLoadingSince = performance.now();
+  state.predictionLoadingMmsi = v.mmsi;
+  els.trajectoryLoadingVessel.textContent =
+    `${v.name || `MMSI ${v.mmsi}`} · ${formatLatitude(v.lat)} · ${formatLongitude(v.lon)}`;
+  for (const name of ["terrain", "ocean", "weather"]) {
+    setPredictionLoadingStage(name, "loading", "Loading");
+  }
+  setPredictionLoadingStage("routes", "loading", "Calculating");
+  els.trajectoryLoading.classList.add("is-visible");
+  els.trajectoryLoading.setAttribute("aria-hidden", "false");
+}
+
+async function hidePredictionLoading(mmsi = state.predictionLoadingMmsi) {
+  if (mmsi !== state.predictionLoadingMmsi) return;
+  const visibleFor = performance.now() - state.predictionLoadingSince;
+  if (visibleFor < 520) {
+    await new Promise((resolve) => window.setTimeout(resolve, 520 - visibleFor));
+  }
+  if (mmsi !== state.predictionLoadingMmsi) return;
+  setPredictionLoadingStage("routes", "ready", "Ready");
+  els.trajectoryLoading.classList.remove("is-visible");
+  els.trajectoryLoading.setAttribute("aria-hidden", "true");
+  state.predictionLoadingMmsi = null;
+}
+
+function cancelPredictionLoading() {
+  els.trajectoryLoading.classList.remove("is-visible");
+  els.trajectoryLoading.setAttribute("aria-hidden", "true");
+  state.predictionLoadingMmsi = null;
+}
+
+async function warmPredictionConditions(v, renderId) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    if (state.selectedMmsi !== v.mmsi || state.trajectoryRenderId !== renderId) return;
+    let conditions;
+    try {
+      conditions = await getJson(
+        `/api/global/${encodeURIComponent(v.mmsi)}/conditions`
+      );
+    } catch (_err) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      continue;
+    }
+    if (state.selectedMmsi !== v.mmsi || state.trajectoryRenderId !== renderId) return;
+    renderEnvironmentalMetrics(conditions);
+    const oceanReady = Boolean(conditions.ocean_conditions?.available);
+    const oceanPending = Boolean(conditions.ocean_conditions?.pending);
+    const weatherReady = Boolean(conditions.weather_conditions?.available);
+    const weatherPending = Boolean(conditions.weather_conditions?.pending);
+    const terrainReady = Boolean(conditions.terrain?.available);
+    const terrainPending = Boolean(conditions.terrain?.pending);
+    setPredictionLoadingStage(
+      "ocean",
+      oceanReady ? "ready" : oceanPending ? "loading" : "idle",
+      oceanReady ? "Ready" : oceanPending ? "Loading" : "Unavailable"
+    );
+    setPredictionLoadingStage(
+      "weather",
+      weatherReady ? "ready" : weatherPending ? "loading" : "idle",
+      weatherReady ? "Ready" : weatherPending ? "Loading" : "Unavailable"
+    );
+    setPredictionLoadingStage(
+      "terrain",
+      terrainReady ? "ready" : terrainPending ? "loading" : "idle",
+      terrainReady ? "Ready" : terrainPending ? "Loading" : "Unavailable"
+    );
+    if (!oceanPending && !weatherPending && !terrainPending) return;
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
   }
 }
 
@@ -2495,12 +2752,14 @@ async function showTrajectory(
       ? `${escapeHtml(context.port.name)} port area`
       : "Monitored port area";
     contextLines.push(
-      `${portLabel} · ${Number(context.port?.distance_km || 0).toFixed(1)} km away`
+      `${portLabel} · ${formatMaritimeDistanceKm(context.port?.distance_km)} away`
     );
   }
   if (context.on_land) contextLines.push("Position intersects coastline data");
   for (const cable of context.near_cables || []) {
-    contextLines.push(`${escapeHtml(cable.name)} cable · ${Number(cable.distance_km).toFixed(1)} km`);
+    contextLines.push(
+      `${escapeHtml(cable.name)} cable · ${formatMaritimeDistanceKm(cable.distance_km)}`
+    );
   }
   els.trajectoryContext.innerHTML = contextLines.length
     ? `<div class="trajectory-heading">Location alerts</div>${contextLines.map((line) => `<div>${line}</div>`).join("")}`
@@ -2526,6 +2785,7 @@ async function showTrajectory(
   }
   if (!v.dark) {
     closeSimulationViewer();
+    cancelPredictionLoading();
     state.selectedPredictionKey = null;
     setTrajectoryModesDisabled(false);
     els.trajectoryEnvironment.innerHTML = "";
@@ -2549,6 +2809,8 @@ async function showTrajectory(
     }
     return;
   }
+  const cacheKey = predictionCacheKey(v);
+  let prediction = state.predictionCache.get(cacheKey);
   if (!inPlaceRefresh) {
     els.trajectoryHeading.textContent = "Calculating likely routes…";
     setTrajectoryModesDisabled(true);
@@ -2561,10 +2823,10 @@ async function showTrajectory(
     els.trajectoryOptions.innerHTML = "";
     els.trajectoryNote.textContent =
       "Reviewing the vessel's last reported movement and nearby conditions.";
+    warmPredictionConditions(v, renderId).catch(() => {});
+    if (!prediction) showPredictionLoading(v);
   }
-  const cacheKey = predictionCacheKey(v);
   state.selectedPredictionKey = cacheKey;
-  let prediction = state.predictionCache.get(cacheKey);
   let shouldPollEnvironment = false;
   try {
     if (!prediction) {
@@ -2585,6 +2847,7 @@ async function showTrajectory(
     }
   } catch (err) {
     if (state.trajectoryRenderId === renderId) {
+      hidePredictionLoading(v.mmsi);
       setTrajectoryModesDisabled(false);
       if (err.status === 409) {
         els.trajectoryHeading.textContent = "Position reporting resumed";
@@ -2603,6 +2866,9 @@ async function showTrajectory(
     return;
   }
   if (state.trajectoryRenderId !== renderId || state.selectedMmsi !== v.mmsi) return;
+  if (prediction.simulation_ensemble) {
+    state.simulationCache.set(cacheKey, prediction);
+  }
   if (inPlaceRefresh) {
     stopTrajectoryAnimation({ resetClock: false });
     globalProjectionLayer.clearLayers();
@@ -2639,14 +2905,21 @@ async function showTrajectory(
   scenarios.forEach((scenario, index) => {
     const color = colors[index % colors.length];
     const probability = Math.max(0, Number(scenario.probability) * 100);
-    const spreadKm = Math.max(0, Number(scenario.uncertainty_radius_m) / 1000);
+    const spread = formatMaritimeDistanceMeters(scenario.uncertainty_radius_m);
+    const endpoint = scenario.path?.[scenario.path.length - 1];
+    const endpointLatitude = endpoint ? formatLatitude(endpoint[0]) : null;
+    const endpointLongitude = endpoint ? formatLongitude(endpoint[1]) : null;
     const row = document.createElement("div");
     row.className = "trajectory-option";
     row.innerHTML =
       `<span class="trajectory-swatch" style="background:${color}"></span>` +
-      `<span>${behaviorLabels[scenario.behavior] || `Route ${index + 1}`} · ` +
-      `±${spreadKm.toFixed(1)} km spread</span>` +
-      `<span class="trajectory-distance">${probability.toFixed(1)}% likely</span>`;
+      `<span class="trajectory-route-summary">` +
+      `<strong>${behaviorLabels[scenario.behavior] || `Route ${index + 1}`}</strong>` +
+      `<small>±${spread} uncertainty</small></span>` +
+      `<span class="trajectory-distance">${probability.toFixed(1)}% confidence</span>` +
+      `<small class="trajectory-endpoint">Predicted endpoint · ` +
+      `${escapeHtml(endpointLatitude || "Latitude unavailable")} · ` +
+      `${escapeHtml(endpointLongitude || "Longitude unavailable")}</small>`;
     els.trajectoryOptions.appendChild(row);
   });
   const bounds = trajectoryBounds(
@@ -2679,28 +2952,43 @@ async function showTrajectory(
     [...regions].reverse().forEach((region) => {
       const level = Number(region.level) || 95;
       const fillOpacity = level === 50 ? 0.16 : level === 80 ? 0.095 : 0.05;
-      L.polygon(region.polygon || [], {
-        color: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
-        weight: 0.55,
-        opacity: phase === "elapsed" ? 0.26 : 0.2,
-        fillColor: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
-        fillOpacity,
-        interactive: false,
-        className: `confidence-region confidence-${phase} confidence-${level}`,
-      }).addTo(globalProjectionLayer);
+      confidenceRegionPolygons(region).forEach((polygon) => {
+        L.polygon(polygon, {
+          color: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
+          weight: 0,
+          opacity: 0,
+          fillColor: phase === "elapsed" ? "#ffb020" : "#6fc9e8",
+          fillOpacity,
+          fillRule: "evenodd",
+          interactive: false,
+          className: `confidence-region confidence-${phase} confidence-${level}`,
+        }).addTo(globalProjectionLayer);
+      });
     });
   }
   renderOceanCurrents(prediction.ocean_conditions);
   renderEnvironmentalMetrics(prediction);
   renderEnvironmentalVisuals(prediction, start);
 
-  if ((v.history || []).length > 1) {
-    L.polyline(v.history, {
+  for (const segment of prediction.observed_history?.segments || []) {
+    const path = segment.path || [];
+    if (path.length < 2) continue;
+    const durationMinutes = Number(segment.duration_minutes);
+    const durationLabel = Number.isFinite(durationMinutes)
+      ? formatSilenceAge(durationMinutes * 60)
+      : "reported fixes";
+    L.polyline(path, {
       color: "#ffb020",
       weight: 2,
       opacity: 0.65,
-      interactive: false,
-    }).addTo(globalProjectionLayer);
+      interactive: true,
+      className: "ais-observed-trail",
+    })
+      .bindTooltip(
+        `AIS trail · ${escapeHtml(durationLabel)} before signal loss`,
+        { sticky: true, direction: "top", opacity: 0.94 }
+      )
+      .addTo(globalProjectionLayer);
   }
   scenarios.forEach((scenario, index) => {
     const prominent = index < 3;
@@ -2716,38 +3004,57 @@ async function showTrajectory(
     );
     const elapsedPath = path.slice(0, currentIndex + 1);
     const forecastPath = path.slice(currentIndex);
+    const animationPath = forecastPath.length > 1
+      ? forecastPath
+      : path.slice(Math.max(0, path.length - 2));
     const phaseOffset = index / Math.max(1, scenarios.length);
     const initialProgress = Math.min(1, phaseOffset / 0.88);
-    const initialEased =
-      initialProgress * initialProgress * (3 - 2 * initialProgress);
-    const initialScaled = initialEased * (path.length - 1);
+    const initialScaled = initialProgress * (animationPath.length - 1);
     const initialSegment = Math.min(
-      path.length - 2,
+      animationPath.length - 2,
       Math.floor(initialScaled)
     );
     const initialFraction = initialScaled - initialSegment;
-    const initialFrom = path[initialSegment];
-    const initialTo = path[initialSegment + 1];
+    const initialFrom = animationPath[initialSegment];
+    const initialTo = animationPath[initialSegment + 1];
     const initialPosition = [
       initialFrom[0] + (initialTo[0] - initialFrom[0]) * initialFraction,
       initialFrom[1] + (initialTo[1] - initialFrom[1]) * initialFraction,
     ];
-    if (elapsedPath.length > 1) L.polyline(elapsedPath, {
-      color: "#ffb020",
-      weight: prominent ? 1.6 : 0.75,
-      opacity: prominent ? 0.68 : 0.2,
-      dashArray: "3 5",
-      interactive: false,
-      className: `trajectory-path trajectory-elapsed trajectory-path-${index}`,
-    }).addTo(globalProjectionLayer);
-    if (forecastPath.length > 1) L.polyline(forecastPath, {
-      color,
-      weight: prominent ? 2 : 0.75,
-      opacity: prominent ? 0.86 : 0.2,
-      dashArray: "6 5",
-      interactive: false,
-      className: `trajectory-path trajectory-forecast trajectory-path-${index}`,
-    }).addTo(globalProjectionLayer);
+    if (elapsedPath.length > 1) {
+      const elapsedLine = L.polyline(elapsedPath, {
+        color: "#ffb020",
+        weight: prominent ? 1.6 : 0.75,
+        opacity: prominent ? 0.68 : 0.2,
+        dashArray: "3 5",
+        interactive: prominent,
+        className: `trajectory-path trajectory-elapsed trajectory-path-${index}`,
+      });
+      if (prominent) {
+        elapsedLine.bindTooltip(
+          `Modeled movement since last AIS fix · ${formatSilenceAge(modeledSilenceSeconds)}`,
+          { sticky: true, direction: "top", opacity: 0.94 }
+        );
+      }
+      elapsedLine.addTo(globalProjectionLayer);
+    }
+    if (forecastPath.length > 1) {
+      const forecastLine = L.polyline(forecastPath, {
+        color,
+        weight: prominent ? 2 : 0.75,
+        opacity: prominent ? 0.86 : 0.2,
+        dashArray: "6 5",
+        interactive: prominent,
+        className: `trajectory-path trajectory-forecast trajectory-path-${index}`,
+      });
+      if (prominent) {
+        forecastLine.bindTooltip(
+          `Forward outlook · next ${Number(prediction.horizon_minutes) || 30} minutes`,
+          { sticky: true, direction: "top", opacity: 0.94 }
+        );
+      }
+      forecastLine.addTo(globalProjectionLayer);
+    }
     L.circleMarker(path[currentIndex], {
       radius: prominent ? 3 : 1.5,
       color: "#ffcf66",
@@ -2758,8 +3065,8 @@ async function showTrajectory(
       interactive: false,
       className: "trajectory-current-position",
     }).addTo(globalProjectionLayer);
-    const routeOriginPoint = map.latLngToLayerPoint(path[0]);
-    const routeSpanPx = path.reduce(
+    const routeOriginPoint = map.latLngToLayerPoint(animationPath[0]);
+    const routeSpanPx = animationPath.reduce(
       (largest, point) => Math.max(
         largest,
         routeOriginPoint.distanceTo(map.latLngToLayerPoint(point))
@@ -2770,8 +3077,8 @@ async function showTrajectory(
       Number(scenario.distance_nm || 0) < 0.4 ||
       routeSpanPx < 10;
     const stableBearing = trajectoryBearing(
-      path[0],
-      end,
+      animationPath[0],
+      animationPath[animationPath.length - 1],
       Number(v.course) || Number(v.heading) || 0
     );
     const runner = L.marker(initialPosition, {
@@ -2783,7 +3090,7 @@ async function showTrajectory(
     runner._trajectoryRunner = true;
     runners.push({
       marker: runner,
-      path,
+      path: animationPath,
       phaseOffset,
       shortRoute,
       opacityScale: prominent ? 1 : 0.35,
@@ -2820,6 +3127,9 @@ async function showTrajectory(
   const historicalText = prediction.environment_evidence?.historical_gap?.available
     ? "Historical environmental observations were applied across the AIS gap. "
     : "Historical current, wind and wave observations were unavailable, so live conditions were not projected backward across the AIS gap. ";
+  const terrainText = prediction.signal_availability?.global_terrain
+    ? "Routes and confidence areas are constrained to mapped navigable water, including coastal channels and harbor passages. "
+    : "A detailed navigable-water mask was unavailable for this area. ";
   const driverLabels = {
     course_over_ground: "recent direction",
     true_heading: "vessel heading",
@@ -2838,9 +3148,11 @@ async function showTrajectory(
     windText +
     timingText +
     historicalText +
+    terrainText +
     `${prediction.confidence?.reason || "Confidence reflects the AIS gap and available navigation evidence"}. ` +
     qualityText;
   startTrajectoryAnimation(runners, { preservePhase: inPlaceRefresh });
+  if (!inPlaceRefresh) hidePredictionLoading(v.mmsi);
   setTrajectoryModesDisabled(false);
   if (shouldPollEnvironment) {
     pollPredictionEnvironment(v, cacheKey);
@@ -2897,11 +3209,16 @@ function applyGlobalFix(v) {
 els.trajectoryClose.addEventListener("click", hideTrajectory);
 els.simulationViewerOpen.addEventListener("click", openSimulationViewer);
 els.simulationViewerClose.addEventListener("click", closeSimulationViewer);
+els.simulationViewerZoomIn.addEventListener("click", () => {
+  changeSimulationZoom(1);
+});
+els.simulationViewerZoomOut.addEventListener("click", () => {
+  changeSimulationZoom(-1);
+});
 els.simulationViewerPlay.addEventListener("click", () => {
   state.simulationPlaying = !state.simulationPlaying;
   state.simulationLastFrameAt = null;
-  els.simulationViewerPlay.textContent =
-    state.simulationPlaying ? "Pause" : "Play";
+  renderSimulationPlayControl();
 });
 els.simulationViewerRestart.addEventListener("click", () => {
   state.simulationProgress = 0;
@@ -2946,6 +3263,15 @@ els.simulationViewerCanvas.addEventListener("pointermove", (event) => {
 els.simulationViewerCanvas.addEventListener("pointerleave", () => {
   els.simulationViewerTooltip.classList.add("hidden");
 });
+els.simulationViewerCanvas.addEventListener("wheel", (event) => {
+  if (!state.simulationMap) return;
+  event.preventDefault();
+  const rect = els.simulationViewerCanvas.getBoundingClientRect();
+  changeSimulationZoom(
+    event.deltaY < 0 ? 0.5 : -0.5,
+    L.point(event.clientX - rect.left, event.clientY - rect.top)
+  );
+}, { passive: false });
 window.addEventListener("resize", resizeSimulationCanvas);
 for (const button of document.querySelectorAll(".trajectory-mode")) {
   button.addEventListener("click", () => {
@@ -2964,7 +3290,7 @@ function portDetail(port, selectedScope) {
   const details = [
     port.country,
     selectedScope && Number.isFinite(Number(port.distance_km))
-      ? `${Number(port.distance_km).toFixed(1)} km`
+      ? formatMaritimeDistanceKm(port.distance_km)
       : "",
     port.port_of_entry ? "port of entry" : "",
     port.pilot_required ? "pilot required" : "",
@@ -3035,7 +3361,9 @@ function renderNearbyContext(data) {
   const content =
     `<div class="nearby-heading">${selectedScope ? "Nearby context" : "Map context"}</div>` +
     `<div class="nearby-section-title">` +
-    `${selectedScope ? `Ports within ${Number(data.radius_km || 150).toFixed(0)} km` : "Ports in view"}` +
+    `${selectedScope
+      ? `Ports within ${formatMaritimeDistanceKm(data.radius_km || 150)}`
+      : "Ports in view"}` +
     `<span>${ports.length}</span></div>` +
     `<div class="nearby-list">${nearbyPortRows(ports, selectedScope)}</div>` +
     `<p class="nearby-source">NGA World Port Index · click a port to locate it</p>`;
@@ -3090,27 +3418,186 @@ function refreshNearbyContext() {
 }
 
 function renderLiveRail(status) {
-  if (!document.getElementById("live-rail-contacts")) {
+  if (!document.getElementById("live-rail-live-count")) {
     els.log.innerHTML =
-      `<div class="log-line log-track"><span class="tag">Vessels</span><span id="live-rail-contacts"></span></div>` +
-      `<div class="log-line log-fusion"><span class="tag">Updates</span><span id="live-rail-messages"></span></div>` +
-      `<div class="log-line log-event"><span class="tag">Identity</span><span id="live-rail-identities"></span></div>` +
-      `<div class="log-line log-zone"><span class="tag">Reference</span>protected waters · ports · coastline · infrastructure</div>` +
-      `<div class="log-line log-log"><span class="tag">Registry</span>independent identity review on selection</div>` +
+      `<section class="ops-status">` +
+      `<div class="ops-section-label">Operational status</div>` +
+      `<div class="ops-status-line">` +
+      `<span id="live-rail-status-dot" class="ops-status-dot"></span>` +
+      `<div><strong id="live-rail-status">Establishing picture</strong>` +
+      `<small id="live-rail-status-detail">Waiting for current feed status</small></div>` +
+      `</div></section>` +
+      `<section class="intel-counters" aria-label="Maritime contact counters">` +
+      `<article><span>Live contacts</span><strong id="live-rail-live-count">0</strong></article>` +
+      `<article><span>Dark contacts</span><strong id="live-rail-dark-count">0</strong></article>` +
+      `<article><span>Risk alerts</span><strong id="live-rail-risk-count">0</strong></article>` +
+      `<article><span>Tracked</span><strong id="live-rail-total-count">0</strong></article>` +
+      `</section>` +
+      `<section class="ops-section">` +
+      `<header><span>Active alerts</span><b id="live-rail-alert-count">0</b></header>` +
+      `<div id="live-rail-alerts" class="ops-alerts"></div>` +
+      `</section>` +
+      `<section class="ops-section">` +
+      `<header><span>Feed status</span><b id="live-rail-provider">—</b></header>` +
+      `<div class="feed-status-grid">` +
+      `<div><span>AIS feed</span><strong id="live-rail-feed-health">Checking</strong></div>` +
+      `<div><span>Last update</span><strong id="live-rail-last-update">—</strong></div>` +
+      `<div><span>Position reports</span><strong id="live-rail-position-reports">0</strong></div>` +
+      `<div><span>Vessel records</span><strong id="live-rail-static-reports">0</strong></div>` +
+      `<div><span>Identity conflicts</span><strong id="live-rail-identities">0</strong></div>` +
+      `</div></section>` +
+      `<section class="ops-section registry-section">` +
+      `<header><span>Vessel registry</span><b id="live-rail-registry-state">Awaiting selection</b></header>` +
+      `<dl id="live-rail-registry" class="registry-grid"></dl>` +
+      `</section>` +
       `<div id="live-rail-context" class="live-rail-context"></div>`;
     refreshNearbyContext();
   }
   const counts = globalContactCounts();
   const silenceThreshold = aisSilenceThreshold();
-  document.getElementById("live-rail-contacts").textContent =
-    `${counts.active.toLocaleString()} transmitting · ` +
-    `${counts.dark.toLocaleString()} no AIS report >${silenceThreshold}s · ` +
-    `${counts.total.toLocaleString()} total vessels`;
-  document.getElementById("live-rail-messages").textContent =
-    `${Number(status.position_reports || 0).toLocaleString()} positions · ` +
-    `${Number(status.static_reports || 0).toLocaleString()} vessel details`;
+  const vessels = Array.from(state.globalVessels.values());
+  const riskContacts = vessels.filter((vessel) =>
+    (vessel.risk?.items || []).some((item) =>
+      String(item.severity).toLowerCase() === "critical"
+    )
+  ).length;
+  const protectedContacts = vessels.filter(
+    (vessel) => vessel.context?.in_sanctuary
+  ).length;
+  const identityConflicts = Number(status.identity_switches || 0);
+  const feedHealthy = Boolean(status.connected && state.globalLive);
+  const feedConnected = Boolean(status.connected);
+  const pictureElevated = riskContacts > 0 || identityConflicts > 0;
+  const statusTone = !feedConnected
+    ? "offline"
+    : !feedHealthy || pictureElevated
+      ? "degraded"
+      : "normal";
+  const statusLabel = !feedConnected
+    ? "OFFLINE"
+    : !feedHealthy
+      ? "DEGRADED"
+      : pictureElevated
+        ? "ELEVATED"
+        : "NORMAL";
+  const statusDetail = !feedConnected
+    ? "Primary AIS feed is unavailable"
+    : !feedHealthy
+      ? "Connected; awaiting current position reports"
+      : pictureElevated
+        ? "Priority contact review is required"
+        : "Live maritime picture is current";
+  const lastMessageAt = Number(status.last_message_at);
+  const lastUpdateAge = Number.isFinite(lastMessageAt)
+    ? Math.max(0, Date.now() / 1000 - lastMessageAt)
+    : null;
+  const lastUpdateText = lastUpdateAge === null
+    ? "No message"
+    : lastUpdateAge < 1
+      ? "<1 second ago"
+      : `${formatSilenceAge(lastUpdateAge)} ago`;
+  const alerts = [];
+  if (!feedHealthy) {
+    alerts.push({
+      tone: feedConnected ? "warning" : "critical",
+      title: feedConnected ? "AIS position stream delayed" : "AIS feed disconnected",
+      detail: statusDetail,
+    });
+  }
+  if (counts.dark > 0) {
+    alerts.push({
+      tone: "warning",
+      title: `${counts.dark.toLocaleString()} contacts without AIS`,
+      detail: `No position report for more than ${silenceThreshold} seconds`,
+    });
+  }
+  if (riskContacts > 0) {
+    alerts.push({
+      tone: "critical",
+      title: `${riskContacts.toLocaleString()} contacts require review`,
+      detail: "Operational risk signals are active",
+    });
+  }
+  if (identityConflicts > 0) {
+    alerts.push({
+      tone: "warning",
+      title: `${identityConflicts.toLocaleString()} identity changes observed`,
+      detail: "Identity evidence requires correlation",
+    });
+  }
+  if (protectedContacts > 0) {
+    alerts.push({
+      tone: "neutral",
+      title: `${protectedContacts.toLocaleString()} contacts in protected waters`,
+      detail: "Location context only; not evidence of wrongdoing",
+    });
+  }
+  if (!alerts.length) {
+    alerts.push({
+      tone: "verified",
+      title: "No priority alerts",
+      detail: "Current contact picture remains within monitoring thresholds",
+    });
+  }
+
+  document.getElementById("live-rail-status").textContent = statusLabel;
+  document.getElementById("live-rail-status-detail").textContent = statusDetail;
+  document.getElementById("live-rail-status-dot").className =
+    `ops-status-dot ${statusTone}`;
+  document.getElementById("live-rail-live-count").textContent =
+    counts.active.toLocaleString();
+  document.getElementById("live-rail-dark-count").textContent =
+    counts.dark.toLocaleString();
+  document.getElementById("live-rail-risk-count").textContent =
+    riskContacts.toLocaleString();
+  document.getElementById("live-rail-total-count").textContent =
+    counts.total.toLocaleString();
+  document.getElementById("live-rail-alert-count").textContent =
+    String(alerts.length);
+  document.getElementById("live-rail-alerts").innerHTML = alerts.slice(0, 4).map((alert) =>
+    `<div class="ops-alert ${alert.tone}"><span></span><div>` +
+    `<strong>${escapeHtml(alert.title)}</strong>` +
+    `<small>${escapeHtml(alert.detail)}</small></div></div>`
+  ).join("");
+  document.getElementById("live-rail-provider").textContent =
+    String(status.provider || "AIS").replaceAll("_", " ").toUpperCase();
+  document.getElementById("live-rail-feed-health").textContent =
+    feedHealthy ? "Healthy" : feedConnected ? "Delayed" : "Offline";
+  document.getElementById("live-rail-feed-health").className =
+    feedHealthy ? "normal" : feedConnected ? "degraded" : "offline";
+  document.getElementById("live-rail-last-update").textContent = lastUpdateText;
+  document.getElementById("live-rail-position-reports").textContent =
+    Number(status.position_reports || 0).toLocaleString();
+  document.getElementById("live-rail-static-reports").textContent =
+    Number(status.static_reports || 0).toLocaleString();
   document.getElementById("live-rail-identities").textContent =
-    `${Number(status.identity_switches || 0).toLocaleString()} observed changes`;
+    identityConflicts.toLocaleString();
+
+  const vessel = state.selectedVessel;
+  document.getElementById("live-rail-registry-state").textContent =
+    vessel ? "Contact selected" : "Awaiting selection";
+  const registryRows = [
+    ["MMSI", vessel?.mmsi],
+    ["IMO", vessel?.imo],
+    ["Call sign", vessel?.call_sign],
+    ["Flag", vessel?.flag || vessel?.country],
+    ["Type", aisShipTypeLabel(vessel?.ship_type)],
+    ["Destination", vessel?.destination
+      ? String(vessel.destination).replaceAll("<>", " → ")
+      : null],
+    ["Latitude", formatLatitude(vessel?.lat)],
+    ["Longitude", formatLongitude(vessel?.lon)],
+    ["Course", vessel ? `${Number(vessel.course || 0).toFixed(0)}°` : null],
+    ["Last AIS", vessel
+      ? formatSilenceAge(vesselSilenceAge(vessel))
+      : null],
+  ];
+  document.getElementById("live-rail-registry").innerHTML = registryRows.map(
+    ([label, value]) =>
+      `<div><dt>${escapeHtml(label)}</dt><dd>${value
+        ? escapeHtml(value)
+        : "—"}</dd></div>`
+  ).join("");
 }
 
 function frameRegionalProvider() {

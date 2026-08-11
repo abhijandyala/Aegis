@@ -45,6 +45,19 @@ def _bearing_between(start: tuple[float, float], end: tuple[float, float]) -> fl
     return math.degrees(math.atan2(y, x)) % 360
 
 
+def _distance_m(start: tuple[float, float], end: tuple[float, float]) -> float:
+    lat1, lon1 = map(math.radians, start)
+    lat2, lon2 = map(math.radians, end)
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    value = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    )
+    value = max(0.0, min(1.0, value))
+    return EARTH_RADIUS_M * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+
+
 def _angle_delta(target: float, source: float) -> float:
     return (target - source + 180) % 360 - 180
 
@@ -112,7 +125,10 @@ def _valid_speed(value: object) -> bool:
         number = float(value)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(number) and 0 <= number < 80
+    # Merchant and service-vessel AIS reports above 50 kn are almost always
+    # corrupt sentinel values or receiver artifacts. Treat them as missing
+    # rather than projecting a vessel thousands of nautical miles.
+    return math.isfinite(number) and 0 <= number < 50
 
 
 def _valid_turn(value: object) -> bool:
@@ -380,6 +396,9 @@ def _segment_intersects_land(
     end: tuple[float, float],
 ) -> bool:
     """Check long adaptive steps at intervals small enough to catch coastlines."""
+    precise_check = getattr(context, "segment_crosses_land", None)
+    if callable(precise_check):
+        return bool(precise_check(start, end))
     end_status = context.terrain_status(*end)
     if not end_status["available"]:
         return False
@@ -399,6 +418,131 @@ def _segment_intersects_land(
         if context.terrain_status(*point)["on_land"]:
             return True
     return False
+
+
+def _navigable_step(
+    context: Any,
+    start: tuple[float, float],
+    attempted_end: tuple[float, float],
+    rng: random.Random,
+) -> tuple[tuple[float, float], float, bool]:
+    """Keep a movement step in connected water while preserving intent."""
+    desired_bearing = _bearing_between(start, attempted_end)
+    distance_m = _distance_m(start, attempted_end)
+    if distance_m <= 0 or not _segment_intersects_land(context, start, attempted_end):
+        return attempted_end, desired_bearing, False
+
+    turn_sign = 1 if rng.random() < 0.5 else -1
+    offsets = [
+        value * sign
+        for value in (35, 75, 120)
+        for sign in (turn_sign, -turn_sign)
+    ]
+    # Retain the full movement while testing a bounded set of coast-following
+    # turns. If none is valid, hold position rather than cross a shoreline.
+    for offset in offsets:
+        candidate_bearing = (desired_bearing + offset) % 360
+        candidate = _destination(
+            start[0],
+            start[1],
+            candidate_bearing,
+            distance_m,
+        )
+        candidate_status = context.terrain_status(*candidate)
+        if candidate_status["available"] and candidate_status["on_land"]:
+            continue
+        if not _segment_intersects_land(context, start, candidate):
+            return candidate, candidate_bearing, True
+    return start, desired_bearing, True
+
+
+def _clip_confidence_regions(
+    context: Any,
+    regions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    clip = getattr(context, "clip_water_polygon", None)
+    if not callable(clip):
+        return regions
+    for region in regions:
+        water_polygons = clip(region.get("polygon") or [])
+        if water_polygons is not None:
+            region["water_polygons"] = water_polygons
+    return regions
+
+
+def _observed_history_segments(
+    vessel: dict[str, Any],
+    context: Any,
+) -> dict[str, Any]:
+    """Keep observed AIS fixes without inventing straight paths across land."""
+    records = [
+        {
+            "lat": float(sample["lat"]),
+            "lon": float(sample["lon"]),
+            "time": float(sample.get("time") or 0.0),
+        }
+        for sample in vessel.get("history_samples") or []
+        if isinstance(sample, dict)
+        and "lat" in sample
+        and "lon" in sample
+    ]
+    if len(records) < 2:
+        records = [
+            {"lat": float(point[0]), "lon": float(point[1]), "time": 0.0}
+            for point in vessel.get("history") or []
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+    if len(records) < 2:
+        return {"segments": [], "omitted_connectors": 0}
+
+    segments: list[dict[str, Any]] = []
+    current = [records[0]]
+    omitted = 0
+    for previous, latest in zip(records, records[1:]):
+        start = (previous["lat"], previous["lon"])
+        end = (latest["lat"], latest["lon"])
+        elapsed_s = latest["time"] - previous["time"]
+        implied_speed_kn = (
+            _distance_m(start, end) / elapsed_s / KNOT_TO_MPS
+            if elapsed_s > 0
+            else 0.0
+        )
+        invalid_connector = (
+            _segment_intersects_land(context, start, end)
+            or (elapsed_s > 0 and implied_speed_kn >= 50)
+        )
+        if invalid_connector:
+            if len(current) > 1:
+                segments.append({
+                    "path": [
+                        [round(item["lat"], 5), round(item["lon"], 5)]
+                        for item in current
+                    ],
+                    "duration_minutes": round(
+                        max(0.0, current[-1]["time"] - current[0]["time"]) / 60,
+                        1,
+                    ) if current[-1]["time"] and current[0]["time"] else None,
+                })
+            omitted += 1
+            current = [latest]
+        else:
+            current.append(latest)
+    if len(current) > 1:
+        segments.append({
+            "path": [
+                [round(item["lat"], 5), round(item["lon"], 5)]
+                for item in current
+            ],
+            "duration_minutes": round(
+                max(0.0, current[-1]["time"] - current[0]["time"]) / 60,
+                1,
+            ) if current[-1]["time"] and current[0]["time"] else None,
+        })
+    return {
+        "segments": segments,
+        "omitted_connectors": omitted,
+        "source": "reported AIS fixes; land-crossing gaps are not interpolated",
+    }
 
 
 def _cluster(samples: list[dict[str, Any]], count: int, origin: tuple[float, float]) -> list[dict[str, Any]]:
@@ -871,27 +1015,20 @@ def predict_dark_vessel(
                         sampled_leeway * duration * 60,
                     )
 
-            if _segment_intersects_land(
+            (
+                (next_lat, next_lon),
+                constrained_bearing,
+                terrain_changed,
+            ) = _navigable_step(
                 context,
                 (sample_lat, sample_lon),
                 (next_lat, next_lon),
-            ):
+                rng,
+            )
+            if terrain_changed:
                 constrained = True
-                bearing = (
-                    base_bearing + (35 if rng.random() < 0.5 else -35)
-                ) % 360
-                next_lat, next_lon = _destination(
-                    sample_lat,
-                    sample_lon,
-                    bearing,
-                    speed * KNOT_TO_MPS * duration * 30,
-                )
-                if _segment_intersects_land(
-                    context,
-                    (sample_lat, sample_lon),
-                    (next_lat, next_lon),
-                ):
-                    next_lat, next_lon = sample_lat, sample_lon
+                bearing = constrained_bearing
+                if next_lat == sample_lat and next_lon == sample_lon:
                     speed *= 0.5
             sample_lat, sample_lon = next_lat, next_lon
             path.append([sample_lat, sample_lon])
@@ -925,7 +1062,10 @@ def predict_dark_vessel(
         (lat, lon),
         len(time_steps),
     )
+    elapsed_regions = _clip_confidence_regions(context, elapsed_regions)
+    forecast_regions = _clip_confidence_regions(context, forecast_regions)
     terrain_here = context.terrain_status(lat, lon)
+    observed_history = _observed_history_segments(vessel, context)
     behavior_counts = {
         behavior: sum(
             behavior in sample["behavior_sequence"] for sample in samples
@@ -954,7 +1094,7 @@ def predict_dark_vessel(
     ]
     path_minutes = modeled_silence_minutes + HORIZON_MINUTES
     result = {
-        "model": "monte_carlo_navigation_v4",
+        "model": "monte_carlo_navigation_v5",
         "samples": SAMPLE_COUNT,
         "horizon_minutes": HORIZON_MINUTES,
         "step_minutes": STEP_MINUTES,
@@ -966,6 +1106,7 @@ def predict_dark_vessel(
         "current_path_index": current_path_index,
         "scenario_count": len(scenarios),
         "scenarios": scenarios,
+        "observed_history": observed_history,
         "elapsed_confidence_regions": elapsed_regions,
         "forecast_confidence_regions": forecast_regions,
         "confidence_regions": forecast_regions,
@@ -1032,7 +1173,11 @@ def predict_dark_vessel(
             "independent_radio_frequency": False,
             "satellite_observation": False,
             "peer_vessel_observation": False,
-            "global_terrain": False,
+            "global_terrain": terrain_here["available"],
+            "terrain_source": terrain_here.get(
+                "source",
+                "Bundled regional coastline",
+            ) if terrain_here["available"] else None,
             "ocean_currents": has_ocean,
             "wave_forcing": has_waves,
             "wind_forcing": has_wind,

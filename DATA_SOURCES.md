@@ -7,6 +7,10 @@
 - Submarine cable demonstration geometry: [TeleGeography Submarine Cable Map](https://www.submarinecablemap.com/)
 - Basemap tiles: [CARTO](https://carto.com/attributions) with
   [OpenStreetMap](https://www.openstreetmap.org/copyright) data
+- Navigable-water constraints: [OpenFreeMap](https://openfreemap.org/) vector
+  tiles using the [OpenMapTiles](https://openmaptiles.org/schema/) schema and
+  [OpenStreetMap](https://www.openstreetmap.org/copyright) coastline, harbor,
+  canal, river, lake, and ocean geometry. Tiles are cached locally after use.
 - Optional live positions: [AISStream](https://aisstream.io/)
 - Port identity and facilities: [NGA World Port Index](https://msi.nga.mil/Publications/WPI)
   via its public ArcGIS FeatureServer

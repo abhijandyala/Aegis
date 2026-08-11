@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
+from data.navigable_water import NavigableWaterMask
 from financial import response_plan
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +62,9 @@ class MaritimeContext:
     """Load static layers once and annotate live AIS fixes cheaply."""
 
     def __init__(self) -> None:
+        self._water_mask = NavigableWaterMask(
+            ROOT / ".aegis" / "cache" / "navigable_water"
+        )
         self._layers: dict[str, dict[str, Any]] = {}
         self._geometries: dict[str, Any] = {}
         self._prepared: dict[str, Any] = {}
@@ -150,7 +155,10 @@ class MaritimeContext:
         return None
 
     def terrain_status(self, lat: float, lon: float) -> dict[str, bool]:
-        """Report land intersection only where bundled coastline coverage exists."""
+        """Report land intersection from cached global water tiles or local data."""
+        global_status = self._water_mask.status(lat, lon)
+        if global_status["available"]:
+            return global_status
         available = -126.0 <= lon <= -120.5 and 34.5 <= lat <= 38.5
         return {
             "available": available,
@@ -159,6 +167,47 @@ class MaritimeContext:
                 if available else False
             ),
         }
+
+    def prime_navigable_water(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float,
+    ) -> dict[str, Any]:
+        return self._water_mask.prime_region(lat, lon, radius_km)
+
+    def segment_crosses_land(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> bool:
+        if self._water_mask.has_tiles:
+            return self._water_mask.segment_crosses_land(start, end)
+        # Preserve the bundled California fallback if global tiles are unavailable.
+        mean_lat = math.radians((start[0] + end[0]) / 2)
+        north_m = (end[0] - start[0]) * 111_320
+        east_m = (
+            (end[1] - start[1])
+            * 111_320
+            * max(0.1, math.cos(mean_lat))
+        )
+        checks = max(1, math.ceil(math.hypot(east_m, north_m) / 1500))
+        for index in range(1, checks + 1):
+            fraction = index / checks
+            point = (
+                start[0] + (end[0] - start[0]) * fraction,
+                start[1] + (end[1] - start[1]) * fraction,
+            )
+            status = self.terrain_status(*point)
+            if status["available"] and status["on_land"]:
+                return True
+        return False
+
+    def clip_water_polygon(
+        self,
+        polygon: list[list[float]],
+    ) -> list[dict[str, Any]] | None:
+        return self._water_mask.clip_polygon(polygon)
 
     def annotate(self, vessel: dict[str, Any]) -> dict[str, Any]:
         row = dict(vessel)
