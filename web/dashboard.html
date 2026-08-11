@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="dashboard.css?v=20260811-minimal1" />
+<link rel="stylesheet" href="dashboard.css?v=20260811-forward-runners" />
 <link rel="stylesheet" href="onboarding.css?v=20260802-intro8" />
 </head>
 <body class="intro-active">
@@ -80,6 +80,37 @@
 
     <div id="map-wrap">
       <div id="map"></div>
+      <section id="trajectory-loading" class="trajectory-loading" aria-hidden="true" aria-live="polite">
+        <div class="trajectory-loading-field" aria-hidden="true"></div>
+        <div class="trajectory-loading-content">
+          <p>Maritime prediction</p>
+          <h2>Building probable routes</h2>
+          <span id="trajectory-loading-vessel">Preparing selected contact</span>
+          <div class="trajectory-loading-progress" aria-hidden="true"><i></i></div>
+          <div class="trajectory-loading-stages">
+            <div data-loading-stage="terrain">
+              <i aria-hidden="true"></i>
+              <span><strong>Navigable water</strong><small>Resolving coastline and passages</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="ocean">
+              <i aria-hidden="true"></i>
+              <span><strong>Ocean conditions</strong><small>Current, wave and drift field</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="weather">
+              <i aria-hidden="true"></i>
+              <span><strong>Weather conditions</strong><small>Wind speed and direction</small></span>
+              <b>Loading</b>
+            </div>
+            <div data-loading-stage="routes">
+              <i aria-hidden="true"></i>
+              <span><strong>Monte Carlo model</strong><small>Evaluating 600 possible movements</small></span>
+              <b>Queued</b>
+            </div>
+          </div>
+        </div>
+      </section>
       <section id="fishing-intelligence" class="fishing-intelligence" aria-label="Fishing intelligence layers">
         <button id="fishing-intelligence-toggle" class="fishing-intelligence-toggle" type="button" aria-expanded="false">
           <span class="intel-pulse" aria-hidden="true"></span>
@@ -108,6 +139,48 @@
           <input id="world-search-input" class="world-search-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search anywhere in the world" aria-label="Search anywhere in the world" />
         </form>
         <div id="world-search-results" class="world-search-results hidden" aria-live="polite"></div>
+      </section>
+      <section id="simulation-viewer" class="simulation-viewer hidden" aria-label="Monte Carlo simulation viewer">
+        <header class="simulation-viewer-header">
+          <button id="simulation-viewer-close" type="button" aria-label="Close simulation viewer">Close</button>
+          <div>
+            <span id="simulation-viewer-context">Selected vessel</span>
+            <h2 id="simulation-viewer-title">Monte Carlo Simulation</h2>
+          </div>
+        </header>
+        <div class="simulation-viewer-stage">
+          <div id="simulation-viewer-map" aria-hidden="true"></div>
+          <canvas id="simulation-viewer-canvas"></canvas>
+          <div class="simulation-viewer-map-zoom" aria-label="Simulation map zoom">
+            <button id="simulation-viewer-zoom-in" type="button" aria-label="Zoom simulation map in">+</button>
+            <button id="simulation-viewer-zoom-out" type="button" aria-label="Zoom simulation map out">−</button>
+          </div>
+          <div id="simulation-viewer-scale" class="simulation-viewer-scale" aria-hidden="true"></div>
+          <div class="simulation-viewer-north" aria-hidden="true">N</div>
+          <div id="simulation-viewer-loading" class="simulation-viewer-loading">
+            <span></span>
+            Running the navigation model…
+          </div>
+          <div id="simulation-viewer-tooltip" class="simulation-viewer-tooltip hidden"></div>
+        </div>
+        <div class="simulation-viewer-status">
+          <strong id="simulation-viewer-phase">Preparing ensemble</strong>
+          <span id="simulation-viewer-time">0 minutes</span>
+        </div>
+        <input id="simulation-viewer-timeline" class="simulation-viewer-timeline" type="range" min="0" max="1000" value="0" aria-label="Simulation timeline" />
+        <div class="simulation-viewer-controls">
+          <button id="simulation-viewer-play" type="button" aria-label="Pause simulation" title="Pause simulation">
+            <span class="simulation-control-icon icon-pause" aria-hidden="true"></span>
+          </button>
+          <button id="simulation-viewer-restart" type="button" aria-label="Restart simulation" title="Restart simulation">
+            <span class="simulation-control-icon icon-restart" aria-hidden="true"></span>
+          </button>
+          <span id="simulation-viewer-count">600 paths</span>
+        </div>
+        <div id="simulation-viewer-legend" class="simulation-viewer-legend"></div>
+        <p class="simulation-viewer-note">
+          Every particle is one deterministic model sample. Paths are temporally compressed only for display.
+        </p>
       </section>
       <div id="stats-overlay">
         <div class="stat"><span id="id-switch-count">0</span><label>identity changes</label></div>
@@ -141,7 +214,7 @@
           <div class="rail-header">
             <div>
               <div class="brand">AEGIS</div>
-              <h1 class="rail-title">Maritime intelligence overview</h1>
+              <h1 class="rail-title">Maritime Operational Picture</h1>
             </div>
             <span id="assoc-badge" class="assoc-badge">GLOBAL</span>
           </div>
@@ -158,6 +231,10 @@
           <button id="trajectory-close" class="trajectory-close" aria-label="Close vessel details">Close</button>
         </header>
         <div id="trajectory-meta" class="trajectory-meta"></div>
+        <button id="simulation-viewer-open" class="simulation-viewer-open hidden" type="button">
+          <span aria-hidden="true"></span>
+          View Monte Carlo Simulation
+        </button>
         <div id="trajectory-risk" class="hidden"></div>
         <div class="trajectory-mode-switch" role="group" aria-label="Trajectory alternatives">
           <button class="trajectory-mode active" data-trajectory-mode="all">All likely routes</button>
@@ -224,10 +301,12 @@
 
     <button id="btn-assoc" class="tbtn" title="Compare standard and simplified tracking [M]">STANDARD</button>
     <button id="btn-retract" class="tbtn" title="Temporarily remove the secondary identity report [X]">Remove identity report</button>
-    <button id="btn-global-layer" class="tbtn control-with-glyph active" title="Live AIS is always enabled" aria-pressed="true" disabled>
-      <span class="control-glyph control-glyph-live" aria-hidden="true"></span>
-      <span>Live AIS</span>
-    </button>
+    <div class="vessel-visibility" role="group" aria-label="Vessels shown on map">
+      <span class="vessel-visibility-label">Vessels</span>
+      <button class="vessel-visibility-option" type="button" data-vessel-visibility="silent" aria-pressed="false">No AIS</button>
+      <button class="vessel-visibility-option" type="button" data-vessel-visibility="live" aria-pressed="false">Live AIS</button>
+      <button class="vessel-visibility-option active" type="button" data-vessel-visibility="both" aria-pressed="true">Both</button>
+    </div>
     <button id="btn-bathymetry" class="tbtn control-with-glyph active" title="Toggle colored GEBCO ocean map" aria-pressed="true">
       <span class="control-glyph control-glyph-depth" aria-hidden="true"></span>
       <span>Colored Map</span>
@@ -240,6 +319,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="onboarding.js?v=20260802-intro7"></script>
-<script src="dashboard.js?v=20260811-minimal1"></script>
+<script src="dashboard.js?v=20260811-forward-runners"></script>
 </body>
 </html>

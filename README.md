@@ -100,7 +100,9 @@ See `DATA_SOURCES.md` for map and scenario data sources.
 
 Every bundled reference dataset participates at runtime:
 
-- California coastline checks impossible/grounding positions.
+- Cached OpenStreetMap/OpenMapTiles water geometry constrains predictions to
+  oceans, harbors, channels, canals, and mapped waterways worldwide.
+- The bundled California coastline remains an offline regional fallback.
 - Monterey Bay sanctuary geometry adds protected-water context.
 - NGA World Port Index supplies official port location and facility metadata.
 - Submarine-cable geometry adds proximity alerts.

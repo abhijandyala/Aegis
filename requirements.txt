@@ -3,6 +3,7 @@ numpy==2.5.1
 scipy==1.18.0
 pytest==9.1.1
 shapely==2.1.2
+mapbox-vector-tile>=2.2
 aiohttp>=3.10
 copernicusmarine==2.4.1
 

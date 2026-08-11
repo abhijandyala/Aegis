@@ -211,6 +211,25 @@ def test_confidence_regions_are_nested_and_probabilities_normalized():
     ) < 0.001
 
 
+def test_optional_simulation_ensemble_contains_all_exact_samples_compactly():
+    vessel = _dark_vessel(age_s=23 * 3600)
+    standard = predict_dark_vessel(vessel)
+    detailed = predict_dark_vessel(vessel, include_samples=True)
+
+    assert "simulation_ensemble" not in standard
+    ensemble = detailed["simulation_ensemble"]
+    assert ensemble["count"] == 600
+    assert len(ensemble["paths"]) == 600
+    assert ensemble["temporally_downsampled"] is True
+    assert ensemble["display_points_per_path"] <= 73
+    assert len(ensemble["timeline_minutes"]) == ensemble["display_points_per_path"]
+    assert all(
+        len(sample["path"]) == ensemble["display_points_per_path"] * 2
+        for sample in ensemble["paths"]
+    )
+    assert ensemble["source"].startswith("same deterministic Monte Carlo model")
+
+
 def test_live_environment_is_not_applied_to_historical_gap():
     vessel = _dark_vessel(age_s=6 * 3600)
     current = {
@@ -262,3 +281,35 @@ def test_representative_paths_remain_outside_synthetic_land(monkeypatch):
         for scenario in prediction["scenarios"]
         for point in scenario["path"]
     )
+
+
+def test_observed_ais_trail_does_not_connect_fixes_across_land(monkeypatch):
+    class Terrain:
+        @staticmethod
+        def terrain_status(lat, lon):
+            return {
+                "available": True,
+                "on_land": -123.005 < lon < -122.995,
+            }
+
+    monkeypatch.setattr(
+        "data.dark_prediction.maritime_context",
+        lambda: Terrain(),
+    )
+    prediction = predict_dark_vessel(_dark_vessel(
+        lon=-123.02,
+        course=270.0,
+        heading=270.0,
+        history_samples=[
+            {"lat": 37.7, "lon": -123.02, "time": 1_700_000_000.0},
+            {"lat": 37.7, "lon": -123.01, "time": 1_700_000_300.0},
+            {"lat": 37.7, "lon": -122.99, "time": 1_700_000_600.0},
+        ],
+    ))
+
+    history = prediction["observed_history"]
+    assert history["omitted_connectors"] == 1
+    assert history["segments"] == [{
+        "path": [[37.7, -123.02], [37.7, -123.01]],
+        "duration_minutes": 5.0,
+    }]
