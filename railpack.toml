@@ -1,0 +1,4 @@
+# Explicit start command for Railway Railpack builds.
+# https://railpack.com/config/file
+[deploy]
+startCommand = "python web/server.py"
