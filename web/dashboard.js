@@ -303,9 +303,44 @@ const bathymetryLayer = L.tileLayer.wms("https://wms.gebco.net/mapserv?", {
   layers: "GEBCO_LATEST",
   format: "image/png",
   transparent: true,
-  opacity: 0.3,
+  opacity: 0.28,
+  tileSize: 512,
+  updateWhenZooming: false,
+  updateWhenIdle: true,
+  keepBuffer: 4,
+  className: "bathymetry-tile",
   attribution: "GEBCO 2026",
 }).addTo(map);
+
+function syncBathymetryPresentation() {
+  if (!state.bathymetryOn) return;
+  const zoom = map.getZoom();
+  let opacity = 0.28;
+  let blur = 0;
+  if (zoom >= 15) {
+    blur = 24;
+  } else if (zoom >= 14) {
+    blur = 16;
+  } else if (zoom >= 13) {
+    blur = 9;
+  } else if (zoom >= 12) {
+    blur = 3;
+  } else if (zoom >= 11) {
+    opacity = 0.27;
+  }
+  bathymetryLayer.setOpacity(opacity);
+  const container = bathymetryLayer.getContainer?.();
+  if (container) {
+    container.style.filter = blur
+      ? `blur(${blur}px) saturate(0.88)`
+      : "saturate(0.94)";
+  }
+}
+
+map.on("zoom zoomend", syncBathymetryPresentation);
+bathymetryLayer.on("load", syncBathymetryPresentation);
+syncBathymetryPresentation();
+
 els.btnBathymetry.addEventListener("click", () => {
   state.bathymetryOn = !state.bathymetryOn;
   els.btnBathymetry.classList.toggle("active", state.bathymetryOn);
@@ -313,7 +348,10 @@ els.btnBathymetry.addEventListener("click", () => {
     "aria-pressed",
     String(state.bathymetryOn)
   );
-  if (state.bathymetryOn) bathymetryLayer.addTo(map);
+  if (state.bathymetryOn) {
+    bathymetryLayer.addTo(map);
+    syncBathymetryPresentation();
+  }
   else map.removeLayer(bathymetryLayer);
 });
 
@@ -1555,13 +1593,72 @@ function trajectoryBearing(from, to, fallback = 0) {
   return Math.atan2(east, north) * 180 / Math.PI;
 }
 
+function trajectorySegmentNm(from, to) {
+  const north = (Number(to[0]) - Number(from[0])) * 60;
+  const east =
+    (Number(to[1]) - Number(from[1])) *
+    60 *
+    Math.cos((Number(from[0]) * Math.PI) / 180);
+  return Math.hypot(east, north);
+}
+
+/** Build cumulative-distance samples so animation moves by NM, not point index. */
+function buildTrajectoryMotion(path) {
+  const points = (path || [])
+    .map((point) => [Number(point[0]), Number(point[1])])
+    .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+  if (points.length === 0) {
+    return { points: [[0, 0]], cumulative: [0], totalNm: 0 };
+  }
+  if (points.length === 1) {
+    return { points, cumulative: [0], totalNm: 0 };
+  }
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + trajectorySegmentNm(points[i - 1], points[i]));
+  }
+  return {
+    points,
+    cumulative,
+    totalNm: cumulative[cumulative.length - 1],
+  };
+}
+
+function sampleTrajectoryMotion(motion, progress, fallbackBearing = 0) {
+  const points = motion.points;
+  if (points.length === 1) {
+    return { position: points[0], bearing: fallbackBearing };
+  }
+  const totalNm = Math.max(motion.totalNm, 1e-9);
+  const target = Math.min(1, Math.max(0, progress)) * totalNm;
+  const cumulative = motion.cumulative;
+  let segment = cumulative.length - 2;
+  for (let i = 1; i < cumulative.length; i += 1) {
+    if (target <= cumulative[i]) {
+      segment = i - 1;
+      break;
+    }
+  }
+  const from = points[segment];
+  const to = points[segment + 1];
+  const span = Math.max(1e-9, cumulative[segment + 1] - cumulative[segment]);
+  const fraction = (target - cumulative[segment]) / span;
+  return {
+    position: [
+      from[0] + (to[0] - from[0]) * fraction,
+      from[1] + (to[1] - from[1]) * fraction,
+    ],
+    bearing: trajectoryBearing(from, to, fallbackBearing),
+  };
+}
+
 function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
   stopTrajectoryAnimation({ resetClock: !preservePhase });
   let readinessFrames = 0;
   const begin = () => {
     if (
       runners.some((runner) => runner.marker.getElement() === null)
-      && readinessFrames < 4
+      && readinessFrames < 8
     ) {
       readinessFrames += 1;
       state.trajectoryAnimationFrame = requestAnimationFrame(begin);
@@ -1571,15 +1668,20 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
       ? state.trajectoryAnimationStartedAt
       : performance.now();
     state.trajectoryAnimationStartedAt = startedAt;
-    // Longer routes need more time so boats visibly travel the dashed paths
-    // instead of teleporting across a short forward-outlook stub.
-    const longestHops = runners.reduce(
-      (max, runner) => Math.max(max, Math.max(1, runner.path.length - 1)),
-      1
+    for (const runner of runners) {
+      if (!runner.motion) runner.motion = buildTrajectoryMotion(runner.path);
+    }
+    // Pace by geographic length so dense early samples do not freeze the boats.
+    const longestNm = runners.reduce(
+      (max, runner) => Math.max(max, runner.motion?.totalNm || 0),
+      0
     );
-    const durationMs = Math.min(14000, Math.max(5600, longestHops * 55));
-    const travelEnd = 0.9;
-    const fadeStart = 0.82;
+    const durationMs = Math.min(
+      18000,
+      Math.max(7000, 5500 + longestNm * 1800)
+    );
+    const travelEnd = 0.92;
+    const fadeStart = 0.86;
     const animate = (now) => {
       const phase = ((now - startedAt) % durationMs) / durationMs;
       for (const runner of runners) {
@@ -1591,25 +1693,22 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
             0,
             (travelEnd - runnerPhase) / (travelEnd - fadeStart)
           );
-        const scaled = progress * (runner.path.length - 1);
-        const segment = Math.min(runner.path.length - 2, Math.floor(scaled));
-        const fraction = scaled - segment;
-        const from = runner.path[segment];
-        const to = runner.path[segment + 1];
+        const sample = sampleTrajectoryMotion(
+          runner.motion,
+          progress,
+          runner.stableBearing
+        );
         const rawBearing = runner.shortRoute
           ? runner.stableBearing
-          : trajectoryBearing(from, to, runner.stableBearing);
+          : sample.bearing;
         if (runner.displayBearing === undefined) {
           runner.displayBearing = rawBearing;
         } else {
           const bearingDelta =
             (rawBearing - runner.displayBearing + 540) % 360 - 180;
-          runner.displayBearing += bearingDelta * 0.16;
+          runner.displayBearing += bearingDelta * 0.22;
         }
-        runner.marker.setLatLng([
-          from[0] + (to[0] - from[0]) * fraction,
-          from[1] + (to[1] - from[1]) * fraction,
-        ]);
+        runner.marker.setLatLng(sample.position);
         const element = runner.marker.getElement();
         if (element) {
           element.style.opacity = String(
@@ -3017,20 +3116,14 @@ async function showTrajectory(
       : forecastPath.length > 1
         ? forecastPath
         : path.slice(Math.max(0, path.length - 2));
+    const motion = buildTrajectoryMotion(animationPath);
     const phaseOffset = index / Math.max(1, scenarios.length);
-    const initialProgress = Math.min(1, phaseOffset / 0.9);
-    const initialScaled = initialProgress * (animationPath.length - 1);
-    const initialSegment = Math.min(
-      Math.max(0, animationPath.length - 2),
-      Math.floor(initialScaled)
+    const initialSample = sampleTrajectoryMotion(
+      motion,
+      Math.min(0.08, phaseOffset * 0.12),
+      Number(v.course) || Number(v.heading) || 0
     );
-    const initialFraction = initialScaled - initialSegment;
-    const initialFrom = animationPath[initialSegment] || animationPath[0];
-    const initialTo = animationPath[initialSegment + 1] || initialFrom;
-    const initialPosition = [
-      initialFrom[0] + (initialTo[0] - initialFrom[0]) * initialFraction,
-      initialFrom[1] + (initialTo[1] - initialFrom[1]) * initialFraction,
-    ];
+    const initialPosition = initialSample.position;
     if (elapsedPath.length > 1) {
       const elapsedLine = L.polyline(elapsedPath, {
         color: "#ffb020",
@@ -3083,29 +3176,30 @@ async function showTrajectory(
       ),
       0
     );
-    const shortRoute =
-      Number(scenario.distance_nm || 0) < 0.4 ||
-      routeSpanPx < 10;
+    // Only treat as "short" when the on-map track is truly tiny.
+    const shortRoute = routeSpanPx < 28 && motion.totalNm < 0.35;
     const stableBearing = trajectoryBearing(
       animationPath[0],
       animationPath[animationPath.length - 1],
       Number(v.course) || Number(v.heading) || 0
     );
     const runner = L.marker(initialPosition, {
-      icon: trajectoryRunnerIcon(color, shortRoute || !prominent),
+      icon: trajectoryRunnerIcon(color, shortRoute),
       interactive: false,
       keyboard: false,
-      zIndexOffset: 1000,
+      zIndexOffset: 1200 - index,
     }).addTo(globalProjectionLayer);
     runner._trajectoryRunner = true;
     runners.push({
       marker: runner,
       path: animationPath,
+      motion,
       phaseOffset,
       shortRoute,
-      opacityScale: prominent ? 1 : 0.35,
+      // Keep secondary routes readable so long dashed tracks still show boats.
+      opacityScale: prominent ? 1 : 0.72,
       stableBearing,
-      displayBearing: stableBearing,
+      displayBearing: initialSample.bearing || stableBearing,
     });
   });
   const drivers = prediction.uncertainty_drivers || [];
