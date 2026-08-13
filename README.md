@@ -116,8 +116,3 @@ live map. Contact details combine reference matches, AIS history, and a
 set of conditional response options with visible rate assumptions; dark
 contacts additionally show probabilistic trajectory branches. GEBCO bathymetry
 is available as an operator-controlled visual overlay.
-
-Aegis includes an organizer-approved rewrite of prior maritime-tracking work
-from [Yba1/sentinel-isr](https://github.com/Yba1/sentinel-isr). The runtime has
-been migrated to ordinary Python and extended with Aegis branding, financial
-risk estimates, global contact projections, and a redesigned dashboard.
