@@ -1571,9 +1571,15 @@ function startTrajectoryAnimation(runners, { preservePhase = false } = {}) {
       ? state.trajectoryAnimationStartedAt
       : performance.now();
     state.trajectoryAnimationStartedAt = startedAt;
-    const durationMs = 4800;
-    const travelEnd = 0.88;
-    const fadeStart = 0.8;
+    // Longer routes need more time so boats visibly travel the dashed paths
+    // instead of teleporting across a short forward-outlook stub.
+    const longestHops = runners.reduce(
+      (max, runner) => Math.max(max, Math.max(1, runner.path.length - 1)),
+      1
+    );
+    const durationMs = Math.min(14000, Math.max(5600, longestHops * 55));
+    const travelEnd = 0.9;
+    const fadeStart = 0.82;
     const animate = (now) => {
       const phase = ((now - startedAt) % durationMs) / durationMs;
       for (const runner of runners) {
@@ -3004,19 +3010,23 @@ async function showTrajectory(
     );
     const elapsedPath = path.slice(0, currentIndex + 1);
     const forecastPath = path.slice(currentIndex);
-    const animationPath = forecastPath.length > 1
-      ? forecastPath
-      : path.slice(Math.max(0, path.length - 2));
+    // Animate along the full modeled route (elapsed orange path + forward
+    // outlook). Forecasting-only stubs are often <0.3 NM and look static.
+    const animationPath = path.length > 1
+      ? path
+      : forecastPath.length > 1
+        ? forecastPath
+        : path.slice(Math.max(0, path.length - 2));
     const phaseOffset = index / Math.max(1, scenarios.length);
-    const initialProgress = Math.min(1, phaseOffset / 0.88);
+    const initialProgress = Math.min(1, phaseOffset / 0.9);
     const initialScaled = initialProgress * (animationPath.length - 1);
     const initialSegment = Math.min(
-      animationPath.length - 2,
+      Math.max(0, animationPath.length - 2),
       Math.floor(initialScaled)
     );
     const initialFraction = initialScaled - initialSegment;
-    const initialFrom = animationPath[initialSegment];
-    const initialTo = animationPath[initialSegment + 1];
+    const initialFrom = animationPath[initialSegment] || animationPath[0];
+    const initialTo = animationPath[initialSegment + 1] || initialFrom;
     const initialPosition = [
       initialFrom[0] + (initialTo[0] - initialFrom[0]) * initialFraction,
       initialFrom[1] + (initialTo[1] - initialFrom[1]) * initialFraction,
