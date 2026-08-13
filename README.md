@@ -1,5 +1,7 @@
 # Aegis
 
+**Live demo:** https://aegisisr.up.railway.app
+
 Aegis is a maritime safety and financial-risk operations dashboard. It fuses
 anonymous AIS and radar detections, maintains vessel tracks through crossings,
 detects protected-area intrusions, and continues predicting a vessel's position
